@@ -64,9 +64,6 @@ Operator* CreateOp<gpu>(ConvolutionParam param, int dtype,
     } else if (!CuDNNConvolutionOp<DType>::Supports(param, compute_type, compute_type, ctx)) {
       LOG(WARNING) << "This convolution is not supported by cudnn, MXNET convolution is applied.";
       op = new ConvolutionOp<gpu, DType>(param);
-    } else if (param.num_group != 1){
-      op = new CuDNNGroupConvolutionOp<DType>(param, compute_type, compute_type,
-                                         *in_shape, *out_shape, ctx);
     } else {
       op = new CuDNNConvolutionOp<DType>(param, compute_type, compute_type,
                                          *in_shape, *out_shape, ctx);

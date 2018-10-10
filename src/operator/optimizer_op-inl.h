@@ -230,7 +230,7 @@ struct SGDMomParam : public dmlc::Parameter<SGDMomParam> {
 };
 
 
-struct SGDMomKernel {
+/*struct SGDMomKernel {
   template<typename DType>
   MSHADOW_XINLINE static void Map(int i, DType* out_data, DType* mom_data, const DType* weight_data,
     const DType* grad_data, const DType param_clip_gradient, const DType param_momentum,
@@ -247,6 +247,25 @@ struct SGDMomKernel {
                 - param_lr*param_rescale_grad*grad_data[i];
     }
     KERNEL_ASSIGN(out_data[i], req, weight_data[i] + mom_data[i]);
+  }
+};*/
+
+struct SGDMomKernel {
+  template<typename DType>
+  MSHADOW_XINLINE static void Map(int i, DType* out_data, DType* mom_data, const DType* weight_data,
+    const DType* grad_data, const DType param_clip_gradient, const DType param_momentum,
+    const DType param_lr, const DType param_wd, const DType param_rescale_grad,
+    const OpReqType req) {
+    if (param_clip_gradient >= 0.0f) {
+      mom_data[i] = param_momentum*mom_data[i]
+              + param_wd*weight_data[i]
+              + mshadow_op::clip::Map(param_rescale_grad*grad_data[i], param_clip_gradient);
+    } else {
+      mom_data[i] = param_momentum*mom_data[i]
+                + param_wd*weight_data[i]
+                + param_rescale_grad*grad_data[i];
+    }
+    KERNEL_ASSIGN(out_data[i], req, weight_data[i] - param_lr * mom_data[i]);
   }
 };
 

@@ -100,10 +100,10 @@ namespace cuda {
       
       DType roi_start_w, roi_start_h, roi_end_w, roi_end_h;
       if (left_top_alignment) {
-          roi_start_w = (offset_bottom_rois[1]-0.5) * spatial_scale;
-          roi_start_h = (offset_bottom_rois[2]-0.5) * spatial_scale;
-          roi_end_w = (offset_bottom_rois[3]+0.5) * spatial_scale;
-          roi_end_h = (offset_bottom_rois[4]+0.5) * spatial_scale;
+          roi_start_w = offset_bottom_rois[1] * spatial_scale;
+          roi_start_h = offset_bottom_rois[2] * spatial_scale;
+          roi_end_w = (offset_bottom_rois[3]+1.0) * spatial_scale;
+          roi_end_h = (offset_bottom_rois[4]+1.0) * spatial_scale;
       } else {
           roi_start_w = static_cast<DType>(round(offset_bottom_rois[1])) * spatial_scale - 0.5;
           roi_start_h = static_cast<DType>(round(offset_bottom_rois[2])) * spatial_scale - 0.5;
@@ -140,7 +140,12 @@ namespace cuda {
       DType hstart = static_cast<DType>(ph) * bin_size_h
         + roi_start_h;
       hstart += trans_y * roi_height;
-
+      
+      if (left_top_alignment) {
+          wstart += sub_bin_size_w*0.5 - 0.5;
+          hstart += sub_bin_size_h*0.5 - 0.5;
+      }
+      
       DType sum = 0;
       int count = 0;
       int gw = floor(static_cast<DType>(pw) * group_size / pooled_width);
@@ -246,10 +251,10 @@ namespace cuda {
       
       DType roi_start_w, roi_start_h, roi_end_w, roi_end_h;
       if (left_top_alignment) {
-          roi_start_w = (offset_bottom_rois[1]-0.5) * spatial_scale;
-          roi_start_h = (offset_bottom_rois[2]-0.5) * spatial_scale;
-          roi_end_w = (offset_bottom_rois[3]+0.5) * spatial_scale;
-          roi_end_h = (offset_bottom_rois[4]+0.5) * spatial_scale;
+          roi_start_w = offset_bottom_rois[1] * spatial_scale;
+          roi_start_h = offset_bottom_rois[2] * spatial_scale;
+          roi_end_w = (offset_bottom_rois[3]+1.0) * spatial_scale;
+          roi_end_h = (offset_bottom_rois[4]+1.0) * spatial_scale;
       } else {
           roi_start_w = static_cast<DType>(round(offset_bottom_rois[1])) * spatial_scale - 0.5;
           roi_start_h = static_cast<DType>(round(offset_bottom_rois[2])) * spatial_scale - 0.5;
@@ -267,7 +272,7 @@ namespace cuda {
 
       DType sub_bin_size_h = bin_size_h / static_cast<DType>(sample_per_part);
       DType sub_bin_size_w = bin_size_w / static_cast<DType>(sample_per_part);
-
+      
       int part_h = floor(static_cast<DType>(ph) / pooled_height*part_size);
       int part_w = floor(static_cast<DType>(pw) / pooled_width*part_size);
       int class_id = ctop / channels_each_class;
@@ -287,6 +292,11 @@ namespace cuda {
         + roi_start_h;
       hstart += trans_y * roi_height;
 
+      if (left_top_alignment) {
+          wstart += sub_bin_size_w*0.5 - 0.5;
+          hstart += sub_bin_size_h*0.5 - 0.5;
+      }
+      
       if (top_count[index] <= 0) {
         continue;
       }

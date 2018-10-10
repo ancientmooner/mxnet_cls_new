@@ -66,7 +66,7 @@ namespace op {
 DMLC_REGISTER_PARAMETER(WeightedRegressionOutputParam);
 
 MXNET_OPERATOR_REGISTER_REGRESSION_FWD(WeightedLinearRegressionOutput,
-  mshadow_op::identity, "_backward_linear_reg_out")
+  mshadow_op::identity, "_weighted_backward_linear_reg_out")
 .describe(R"code(Computes and optimizes for squared loss during backward propagation.
 Just outputs ``data`` during forward propagation.
 
@@ -86,7 +86,7 @@ The parameter `grad_scale` can be used to change this scale to `grad_scale/m`.
 MXNET_OPERATOR_REGISTER_REGRESSION_BWD(_weighted_backward_linear_reg_out, mshadow_op::minus);
 
 MXNET_OPERATOR_REGISTER_REGRESSION_FWD(WeightedMAERegressionOutput,
-  mshadow_op::identity, "_backward_mae_reg_out")
+  mshadow_op::identity, "_weighted_backward_mae_reg_out")
 .describe(R"code(Computes mean absolute error of the input.
 
 MAE is a risk metric corresponding to the expected value of the absolute error.
@@ -107,7 +107,7 @@ The parameter `grad_scale` can be used to change this scale to `grad_scale/m`.
 MXNET_OPERATOR_REGISTER_REGRESSION_BWD(_weighted_backward_mae_reg_out, mshadow_op::minus_sign);
 
 MXNET_OPERATOR_REGISTER_REGRESSION_FWD(WeightedLogisticRegressionOutput,
-  mshadow_op::sigmoid, "_backward_logistic_reg_out")
+  mshadow_op::sigmoid, "_weighted_backward_logistic_reg_out")
 .describe(R"code(Applies a logistic function to the input.
 
 The logistic function, also known as the sigmoid function, is computed as
