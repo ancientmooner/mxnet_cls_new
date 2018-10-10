@@ -61,6 +61,7 @@ struct MultiProposalParam : public dmlc::Parameter<MultiProposalParam> {
   int feature_stride;
   bool output_score;
   bool iou_loss;
+  bool left_top_alignment;
   DMLC_DECLARE_PARAMETER(MultiProposalParam) {
     float tmp[] = {0, 0, 0, 0};
     DMLC_DECLARE_FIELD(rpn_pre_nms_top_n).set_default(6000)
@@ -85,6 +86,8 @@ struct MultiProposalParam : public dmlc::Parameter<MultiProposalParam> {
     .describe("Add score to outputs");
     DMLC_DECLARE_FIELD(iou_loss).set_default(false)
     .describe("Usage of IoU Loss");
+    DMLC_DECLARE_FIELD(left_top_alignment).set_default(false)
+    .describe("Whether do left top alignment when generating anchors");
   }
 };
 

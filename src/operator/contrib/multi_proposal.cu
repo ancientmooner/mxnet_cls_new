@@ -457,10 +457,18 @@ class MultiProposalGPUOp : public Operator{
 
     // Generate first anchors based on base anchor
     std::vector<float> base_anchor(4);
-    base_anchor[0] = 0.0;
-    base_anchor[1] = 0.0;
-    base_anchor[2] = param_.feature_stride - 1.0;
-    base_anchor[3] = param_.feature_stride - 1.0;
+    if (param_.left_top_alignment) {
+      base_anchor[0] = -(param_.feature_stride - 1.0) / 2.0;
+      base_anchor[1] = -(param_.feature_stride - 1.0) / 2.0;
+      base_anchor[2] = (param_.feature_stride - 1.0) / 2.0;
+      base_anchor[3] = (param_.feature_stride - 1.0) / 2.0;
+    }
+    else {
+      base_anchor[0] = 0.0;
+      base_anchor[1] = 0.0;
+      base_anchor[2] = param_.feature_stride - 1.0;
+      base_anchor[3] = param_.feature_stride - 1.0;
+    }
     CHECK_EQ(num_anchors, param_.ratios.ndim() * param_.scales.ndim());
     std::vector<float> anchors;
     utils::GenerateAnchors(base_anchor,
