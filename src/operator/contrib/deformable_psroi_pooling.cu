@@ -122,8 +122,8 @@ namespace cuda {
       DType sub_bin_size_h = bin_size_h / static_cast<DType>(sample_per_part);
       DType sub_bin_size_w = bin_size_w / static_cast<DType>(sample_per_part);
 
-      int part_h = floor(static_cast<DType>(ph) / pooled_height*part_size);
-      int part_w = floor(static_cast<DType>(pw) / pooled_width*part_size);
+      int part_h = floor(static_cast<DType>(ph) * part_size / pooled_height);
+      int part_w = floor(static_cast<DType>(pw) * part_size / pooled_width);
       int class_id = ctop / channels_each_class;
       DType trans_x = no_trans ? static_cast<DType>(0) :
         bottom_trans[(((n * num_classes + class_id) * 2)
@@ -273,8 +273,8 @@ namespace cuda {
       DType sub_bin_size_h = bin_size_h / static_cast<DType>(sample_per_part);
       DType sub_bin_size_w = bin_size_w / static_cast<DType>(sample_per_part);
       
-      int part_h = floor(static_cast<DType>(ph) / pooled_height*part_size);
-      int part_w = floor(static_cast<DType>(pw) / pooled_width*part_size);
+      int part_h = floor(static_cast<DType>(ph) * part_size / pooled_height);
+      int part_w = floor(static_cast<DType>(pw) * part_size / pooled_width);
       int class_id = ctop / channels_each_class;
       DType trans_x = no_trans ? static_cast<DType>(0) :
         bottom_trans[(((n * num_classes + class_id) * 2)
