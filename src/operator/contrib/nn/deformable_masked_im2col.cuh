@@ -491,7 +491,7 @@ __global__ void deformable_masked_col2im_coord_gpu_kernel(const int n,
     //grad_offset[index] = val;
     KERNEL_ASSIGN(grad_offset[index], offset_req, val);
     if (offset_c % 2 == 0)
-        KERNEL_ASSIGN(grad_mask[((deformable_group_index * kernel_h * kernel_w + offset_c / 2) * height_col + h) * width_col + w], mask_req, mval);
+        KERNEL_ASSIGN(grad_mask[(((b * deformable_group + deformable_group_index) * kernel_h * kernel_w + offset_c / 2) * height_col + h) * width_col + w], mask_req, mval);
   }
 }
 
