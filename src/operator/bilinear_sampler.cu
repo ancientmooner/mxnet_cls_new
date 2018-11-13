@@ -222,15 +222,19 @@ namespace op {
 template<>
 Operator* CreateOp<gpu>(BilinearSamplerParam param, int dtype) {
   Operator *op = NULL;
-#if MXNET_USE_CUDNN == 1 && CUDNN_MAJOR >= 5
-  MSHADOW_REAL_TYPE_SWITCH(dtype, DType, {
-    op = new CuDNNBilinearSamplerOp<DType>(param);
-  })
-#else
-  MSHADOW_REAL_TYPE_SWITCH(dtype, DType, {
-    op = new BilinearSamplerOp<gpu, DType>(param);
-  })
-#endif  // MXNET_USE_CUDNN && CUDNN_MAJOR
+//#if MXNET_USE_CUDNN == 1 && CUDNN_MAJOR >= 5
+  if (param.use_cudnn) {
+    MSHADOW_REAL_TYPE_SWITCH(dtype, DType, {
+        op = new CuDNNBilinearSamplerOp<DType>(param);
+    })
+  }
+  else {
+//#else
+    MSHADOW_REAL_TYPE_SWITCH(dtype, DType, {
+      op = new BilinearSamplerOp<gpu, DType>(param);
+    })
+  }
+//#endif  // MXNET_USE_CUDNN && CUDNN_MAJOR
   return op;
 }
 

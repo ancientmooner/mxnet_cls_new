@@ -45,9 +45,12 @@ enum BilinearSamplerOpOutputs {kOut, kTmp};
 
 struct BilinearSamplerParam : public dmlc::Parameter<BilinearSamplerParam> {
   bool out_zero;
+  bool use_cudnn;
   DMLC_DECLARE_PARAMETER(BilinearSamplerParam) {
     DMLC_DECLARE_FIELD(out_zero).set_default(false)
     .describe("BilinearSampler out_zero");
+    DMLC_DECLARE_FIELD(use_cudnn).set_default(true)
+    .describe("BilinearSampler use_cudnn");
   }
 };
 
