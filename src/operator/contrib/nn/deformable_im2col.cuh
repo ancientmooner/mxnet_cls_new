@@ -80,32 +80,26 @@ __device__ DType deformable_im2col_bilinear(const DType* bottom_data, const int 
 
   int h_low = floor(h);
   int w_low = floor(w);
-  int h_high;
-  int w_high;
-  if (h_low >= height - 1) {
-    h_high = h_low = height - 1;
-    h = (DType)h_low;
-  }
-  else {
-    h_high = h_low + 1;
-  }
-
-  if (w_low >= width - 1) {
-    w_high = w_low = width - 1;
-    w = (DType)w_low;
-  }
-  else {
-    w_high = w_low + 1;
-  }
+  int h_high = h_low + 1;
+  int w_high = w_low + 1;
 
   DType lh = h - h_low;
   DType lw = w - w_low;
   DType hh = 1 - lh, hw = 1 - lw;
 
-  DType v1 = bottom_data[h_low * data_width + w_low];
-  DType v2 = bottom_data[h_low * data_width + w_high];
-  DType v3 = bottom_data[h_high * data_width + w_low];
-  DType v4 = bottom_data[h_high * data_width + w_high];
+  DType v1 = 0;
+  if (h_low >= 0 && w_low >= 0)
+    v1 = bottom_data[h_low * data_width + w_low];
+  DType v2 = 0;
+  if (h_low >=0 && w_high <= width - 1)
+    v2 = bottom_data[h_low * data_width + w_high];
+  DType v3 = 0;
+  if (h_high <= height - 1 && w_low >= 0)
+    v3 = bottom_data[h_high * data_width + w_low];
+  DType v4 = 0;
+  if (h_high <= height - 1 && w_high <= width - 1)
+    v4 = bottom_data[h_high * data_width + w_high];
+  
   DType w1 = hh * hw, w2 = hh * lw, w3 = lh * hw, w4 = lh * lw;
 
   DType val = (w1 * v1 + w2 * v2 + w3 * v3 + w4 * v4);
@@ -117,45 +111,25 @@ template <typename DType>
 __device__ DType get_gradient_weight(DType argmax_h, DType argmax_w,
   const int h, const int w, const int height, const int width) {
 
-  if (argmax_h < 0 || argmax_h > height || argmax_w < 0 || argmax_w > width) {
+  if (argmax_h <= -1 || argmax_h >= height || argmax_w <= -1 || argmax_w >= width) {
     //empty
     return 0;
   }
 
-  argmax_h = max(argmax_h, (DType)0.0f);
-  argmax_w = max(argmax_w, (DType)0.0f);
+  int argmax_h_low = floor(argmax_h);
+  int argmax_w_low = floor(argmax_w);
+  int argmax_h_high = argmax_h_low + 1;
+  int argmax_w_high = argmax_w_low + 1;
 
-  int argmax_h_low = (int)argmax_h;
-  int argmax_w_low = (int)argmax_w;
-  int argmax_h_high;
-  int argmax_w_high;
-  if (argmax_h_low >= height - 1) {
-    argmax_h_high = argmax_h_low = height - 1;
-    argmax_h = (DType)argmax_h_low;
-  } else {
-    argmax_h_high = argmax_h_low + 1;
-  }
-  if (argmax_w_low >= width - 1)
-  {
-    argmax_w_high = argmax_w_low = width - 1;
-    argmax_w = (DType)argmax_w_low;
-  } else {
-    argmax_w_high = argmax_w_low + 1;
-  }
   DType weight = 0;
-  if (h == argmax_h_low) {
-    if (w == argmax_w_low) {
+  if (h == argmax_h_low && w == argmax_w_low)
       weight = (h + 1 - argmax_h) * (w + 1 - argmax_w);
-    } else if (w == argmax_w_high) {
+  if (h == argmax_h_low && w == argmax_w_high)
       weight = (h + 1 - argmax_h) * (argmax_w + 1 - w);
-    }
-  } else if (h == argmax_h_high) {
-    if (w == argmax_w_low) {
+  if (h == argmax_h_high && w == argmax_w_low)
       weight = (argmax_h + 1 - h) * (w + 1 - argmax_w);
-    } else if (w == argmax_w_high) {
+  if (h == argmax_h_high && w == argmax_w_high)
       weight = (argmax_h + 1 - h) * (argmax_w + 1 - w);
-    }
-  }
   return weight;
 }
 
@@ -165,43 +139,37 @@ __device__ DType get_coordinate_weight(DType argmax_h, DType argmax_w,
   const int height, const int width, const DType* im_data,
   const int data_width, const int bp_dir) {
 
-  if (argmax_h < 0 || argmax_h > height || argmax_w < 0 || argmax_w > width)
+  if (argmax_h <= -1 || argmax_h >= height || argmax_w <= -1 || argmax_w >= width)
   {
     //empty
     return 0;
   }
 
-  if (argmax_h < 0) argmax_h = 0;
-  if (argmax_w < 0) argmax_w = 0;
-
-  int argmax_h_low = (int)argmax_h;
-  int argmax_w_low = (int)argmax_w;
-  int argmax_h_high;
-  int argmax_w_high;
-  if (argmax_h_low >= height - 1) {
-    argmax_h_high = argmax_h_low = height - 1;
-    argmax_h = (DType)argmax_h_low;
-  } else {
-    argmax_h_high = argmax_h_low + 1;
-  }
-  if (argmax_w_low >= width - 1) {
-    argmax_w_high = argmax_w_low = width - 1;
-    argmax_w = (DType)argmax_w_low;
-  } else {
-    argmax_w_high = argmax_w_low + 1;
-  }
+  int argmax_h_low = floor(argmax_h);
+  int argmax_w_low = floor(argmax_w);
+  int argmax_h_high = argmax_h_low + 1;
+  int argmax_w_high = argmax_w_low + 1;
+  
   DType weight = 0;
 
   if (bp_dir == 0) {
-    weight += -1 * (argmax_w_low + 1 - argmax_w) * im_data[argmax_h_low * data_width + argmax_w_low];
-    weight += -1 * (argmax_w - argmax_w_low) * im_data[argmax_h_low * data_width + argmax_w_high];
-    weight += (argmax_w_low + 1 - argmax_w) * im_data[argmax_h_high * data_width + argmax_w_low];
-    weight += (argmax_w - argmax_w_low) * im_data[argmax_h_high * data_width + argmax_w_high];
+    if (argmax_h_low >= 0 && argmax_w_low >= 0)
+        weight += -1 * (argmax_w_low + 1 - argmax_w) * im_data[argmax_h_low * data_width + argmax_w_low];
+    if (argmax_h_low >= 0 && argmax_w_high <= width - 1)
+        weight += -1 * (argmax_w - argmax_w_low) * im_data[argmax_h_low * data_width + argmax_w_high];
+    if (argmax_h_high <= height - 1 && argmax_w_low >= 0)
+        weight += (argmax_w_low + 1 - argmax_w) * im_data[argmax_h_high * data_width + argmax_w_low];
+    if (argmax_h_high <= height - 1 && argmax_w_high <= width - 1)
+        weight += (argmax_w - argmax_w_low) * im_data[argmax_h_high * data_width + argmax_w_high];
   } else if (bp_dir == 1) {
-    weight += -1 * (argmax_h_low + 1 - argmax_h) * im_data[argmax_h_low * data_width + argmax_w_low];
-    weight += (argmax_h_low + 1 - argmax_h) * im_data[argmax_h_low * data_width + argmax_w_high];
-    weight += -1 * (argmax_h - argmax_h_low) * im_data[argmax_h_high * data_width + argmax_w_low];
-    weight += (argmax_h - argmax_h_low) * im_data[argmax_h_high * data_width + argmax_w_high];
+    if (argmax_h_low >= 0 && argmax_w_low >= 0)
+        weight += -1 * (argmax_h_low + 1 - argmax_h) * im_data[argmax_h_low * data_width + argmax_w_low];
+    if (argmax_h_low >= 0 && argmax_w_high <= width - 1)
+        weight += (argmax_h_low + 1 - argmax_h) * im_data[argmax_h_low * data_width + argmax_w_high];
+    if (argmax_h_high <= height - 1 && argmax_w_low >= 0)
+        weight += -1 * (argmax_h - argmax_h_low) * im_data[argmax_h_high * data_width + argmax_w_low];
+    if (argmax_h_high <= height - 1 && argmax_w_high <= width - 1)
+        weight += (argmax_h - argmax_h_low) * im_data[argmax_h_high * data_width + argmax_w_high];
   }
 
   return weight;
@@ -236,7 +204,8 @@ __global__ void deformable_im2col_gpu_kernel(const int n, const DType* data_im, 
     const int h_in = h_col * stride_h - pad_h;
     const int w_in = w_col * stride_w - pad_w;
     DType* data_col_ptr = data_col + ((c_col * batch_size + b_col) * height_col + h_col) * width_col + w_col;
-    const DType* data_im_ptr = data_im + ((b_col * num_channels + c_im) * height + h_in) * width + w_in;
+    //const DType* data_im_ptr = data_im + ((b_col * num_channels + c_im) * height + h_in) * width + w_in;
+    const DType* data_im_ptr = data_im + (b_col * num_channels + c_im) * height * width;
     const DType* data_offset_ptr = data_offset + (b_col * deformable_group + deformable_group_index) * 2 * kernel_h * kernel_w * height_col * width_col;
 
 
@@ -249,12 +218,13 @@ __global__ void deformable_im2col_gpu_kernel(const int n, const DType* data_im, 
         DType val = static_cast<DType>(0);
         const DType h_im = h_in + i * dilation_h + offset_h;
         const DType w_im = w_in + j * dilation_w + offset_w;
-        if (h_im >= 0 && w_im >= 0 && h_im < height && w_im < width) {
-          const DType map_h = i * dilation_h + offset_h;
-          const DType map_w = j * dilation_w + offset_w;
-          const int cur_height = height - h_in;
-          const int cur_width = width - w_in;
-          val = deformable_im2col_bilinear(data_im_ptr, width, cur_height, cur_width, map_h, map_w);
+        if (h_im > -1 && w_im > -1 && h_im < height && w_im < width) {
+          //const DType map_h = i * dilation_h + offset_h;
+          //const DType map_w = j * dilation_w + offset_w;
+          //const int cur_height = height - h_in;
+          //const int cur_width = width - w_in;
+          //val = deformable_im2col_bilinear(data_im_ptr, width, cur_height, cur_width, map_h, map_w);
+          val = deformable_im2col_bilinear(data_im_ptr, width, height, width, h_im, w_im);
         }
         *data_col_ptr = val;
         data_col_ptr += batch_size * height_col * width_col;
@@ -465,8 +435,8 @@ __global__ void deformable_col2im_coord_gpu_kernel(const int n, const DType* dat
       const DType offset_w = data_offset_ptr[data_offset_w_ptr];
       DType inv_h = h_in + i * dilation_h + offset_h;
       DType inv_w = w_in + j * dilation_w + offset_w;
-      if (inv_h < 0 || inv_w < 0 || inv_h >= height || inv_w >= width) {
-        inv_h = inv_w = -1;
+      if (inv_h <= -1 || inv_w <= -1 || inv_h >= height || inv_w >= width) {
+        inv_h = inv_w = -2;
       }
       const DType weight = get_coordinate_weight(
         inv_h, inv_w,

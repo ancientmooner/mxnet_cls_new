@@ -30,7 +30,6 @@
 
 namespace mxnet {
 namespace op {
-
   template<>
   Operator* CreateOp<gpu>(DeformableConvolutionParam param, int dtype,
     std::vector<TShape> *in_shape,
