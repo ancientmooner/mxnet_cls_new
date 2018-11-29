@@ -48,18 +48,18 @@
  *
  ***************** END Caffe Copyright Notice and Disclaimer ********************
  *
- * Copyright (c) 2017 Microsoft
- * Licensed under The Apache-2.0 License [see LICENSE for details]
- * \file deformable_im2col.h
+ * Copyright (c) 2018 Microsoft
+ * Licensed under The MIT License [see LICENSE for details]
+ * \file modulated_deformable_im2col.h
  * \brief Function definitions of converting an image to
  * column matrix based on kernel, padding, dilation, and offset.
  * These functions are mainly used in deformable convolution operators.
- * \ref: https://arxiv.org/abs/1703.06211
- * \author Yuwen Xiong, Haozhi Qi, Jifeng Dai
+ * \ref: https://arxiv.org/abs/1811.11168
+ * \author Yuwen Xiong, Haozhi Qi, Jifeng Dai, Xizhou Zhu, Han Hu
  */
 
-#ifndef MXNET_OPERATOR_CONTRIB_NN_DEFORMABLE_MASKED_IM2COL_H_
-#define MXNET_OPERATOR_CONTRIB_NN_DEFORMABLE_MASKED_IM2COL_H_
+#ifndef MXNET_OPERATOR_CONTRIB_NN_MODULATED_DEFORMABLE_IM2COL_H_
+#define MXNET_OPERATOR_CONTRIB_NN_MODULATED_DEFORMABLE_IM2COL_H_
 
 #include <mxnet/base.h>
 #include <mxnet/operator.h>
@@ -85,7 +85,7 @@ namespace op {
  * \param data_col column buffer pointer
  */
 template <typename DType>
-inline void deformable_masked_im2col(mshadow::Stream<cpu>* s,
+inline void modulated_deformable_im2col(mshadow::Stream<cpu>* s,
   const DType* data_im, const DType* data_offset, const DType* data_mask,
   const TShape& im_shape, const TShape& col_shape, const TShape& kernel_shape,
   const TShape& pad, const TShape& stride, const TShape& dilation,
@@ -113,7 +113,7 @@ inline void deformable_masked_im2col(mshadow::Stream<cpu>* s,
  * \param grad_im pointer of a image (C, H, W,...) in the image batch
  */
 template <typename DType>
-inline void deformable_masked_col2im(mshadow::Stream<cpu>* s,
+inline void modulated_deformable_col2im(mshadow::Stream<cpu>* s,
   const DType* data_col, const DType* data_offset, const DType* data_mask,
   const TShape& im_shape, const TShape& col_shape, const TShape& kernel_shape,
   const TShape& pad, const TShape& stride,
@@ -140,7 +140,7 @@ inline void deformable_masked_col2im(mshadow::Stream<cpu>* s,
  */
 
 template <typename DType>
-inline void deformable_masked_col2im_coord(mshadow::Stream<cpu>* s,
+inline void modulated_deformable_col2im_coord(mshadow::Stream<cpu>* s,
   const DType* data_col, const DType* data_im, const DType* data_offset, const DType* data_mask,
   const TShape& im_shape, const TShape& col_shape, const TShape& kernel_shape,
   const TShape& pad, const TShape& stride,
@@ -152,6 +152,6 @@ inline void deformable_masked_col2im_coord(mshadow::Stream<cpu>* s,
 }  // namespace op
 }  // namespace mxnet
 #ifdef __CUDACC__
-#include "./deformable_masked_im2col.cuh"
+#include "./modulated_deformable_im2col.cuh"
 #endif
 #endif  // MXNET_OPERATOR_CONTRIB_NN_DEFORMABLE_MASKED_IM2COL_H_

@@ -1,28 +1,9 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
- * Copyright (c) 2017 Microsoft
- * Licensed under The Apache-2.0 License [see LICENSE for details]
+ * Copyright (c) 2018 Microsoft
+ * Licensed under The MIT License [see LICENSE for details]
  * \file deformable_convolution.cc
  * \brief
- * \author Yuwen Xiong, Haozhi Qi, Jifeng Dai
+ * \author Yuwen Xiong, Haozhi Qi, Jifeng Dai, Xizhou Zhu, Han Hu
 */
 
 #include "./deformable_convolution-inl.h"
@@ -62,7 +43,7 @@ The deformable convolution operation is described in https://arxiv.org/abs/1703.
 For 2-D deformable convolution, the shapes are
 
 - **data**: *(batch_size, channel, height, width)*
-- **offset**: *(batch_size, num_deformable_group * kernel[0] * kernel[1], height, width)*
+- **offset**: *(batch_size, num_deformable_group * kernel[0] * kernel[1] * 2, height, width)*
 - **weight**: *(num_filter, channel, kernel[0], kernel[1])*
 - **bias**: *(num_filter,)*
 - **out**: *(batch_size, num_filter, out_height, out_width)*.

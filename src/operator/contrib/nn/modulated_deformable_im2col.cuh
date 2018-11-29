@@ -48,18 +48,18 @@
  *
  ***************** END Caffe Copyright Notice and Disclaimer ********************
  *
- * Copyright (c) 2017 Microsoft
+ * Copyright (c) 2018 Microsoft
  * Licensed under The Apache-2.0 License [see LICENSE for details]
- * \file deformable_im2col.cuh
+ * \file modulated_deformable_im2col.cuh
  * \brief Function definitions of converting an image to
  * column matrix based on kernel, padding, dilation, and offset.
- * These functions are mainly used in deformable convolution operators.
- * \ref: https://arxiv.org/abs/1703.06211
- * \author Yuwen Xiong, Haozhi Qi, Jifeng Dai
+ * These functions are mainly used in modulated deformable convolution operators.
+ * \ref: https://arxiv.org/abs/1811.11168
+ * \author Yuwen Xiong, Haozhi Qi, Jifeng Dai, Xizhou Zhu, Han Hu
  */
 
-#ifndef MXNET_OPERATOR_CONTRIB_NN_DEFORMABLE_MASKED_IM2COL_CUH_
-#define MXNET_OPERATOR_CONTRIB_NN_DEFORMABLE_MASKED_IM2COL_CUH_
+#ifndef MXNET_OPERATOR_CONTRIB_NN_MODULATED_DEFORMABLE_IM2COL_CUH_
+#define MXNET_OPERATOR_CONTRIB_NN_MODULATED_DEFORMABLE_IM2COL_CUH_
 
 #include <mxnet/base.h>
 #include <mxnet/operator.h>
@@ -181,7 +181,7 @@ __device__ DType dmcn_get_coordinate_weight(DType argmax_h, DType argmax_w,
  * DO NOT call this directly. Use wrapper function im2col() instead;
  */
 template <typename DType>
-__global__ void deformable_masked_im2col_gpu_kernel(const int n,
+__global__ void modulated_deformable_im2col_gpu_kernel(const int n,
   const DType* data_im, const DType* data_offset, const DType* data_mask,
   const int height, const int width, const int kernel_h, const int kernel_w,
   const int pad_h, const int pad_w,
@@ -257,7 +257,7 @@ __global__ void deformable_masked_im2col_gpu_kernel(const int n,
  * \param data_col column buffer pointer
  */
 template <typename DType>
-inline void deformable_masked_im2col(mshadow::Stream<gpu>* s,
+inline void modulated_deformable_im2col(mshadow::Stream<gpu>* s,
   const DType* data_im, const DType* data_offset, const DType* data_mask,
   const TShape& im_shape, const TShape& col_shape, const TShape& kernel_shape,
   const TShape& pad, const TShape& stride, const TShape& dilation,
@@ -270,13 +270,13 @@ inline void deformable_masked_im2col(mshadow::Stream<gpu>* s,
   using namespace mxnet_op;
   switch (num_spatial_axes) {
   case 2:
-    deformable_masked_im2col_gpu_kernel<DType> // NOLINT_NEXT_LINE(whitespace/operators)
+    modulated_deformable_im2col_gpu_kernel<DType> // NOLINT_NEXT_LINE(whitespace/operators)
         <<<cuda_get_num_blocks(num_kernels), mshadow::cuda::kBaseThreadNum,
            0, mshadow::Stream<gpu>::GetStream(s)>>>(
         num_kernels, data_im, data_offset, data_mask, im_shape[2], im_shape[3], kernel_shape[0], kernel_shape[1],
         pad[0], pad[1], stride[0], stride[1], dilation[0], dilation[1], channel_per_deformable_group,
         col_shape[1], im_shape[1], deformable_group, col_shape[2], col_shape[3], data_col);
-    MSHADOW_CUDA_POST_KERNEL_CHECK(deformable_masked_im2col_gpu_kernel);
+    MSHADOW_CUDA_POST_KERNEL_CHECK(modulated_deformable_im2col_gpu_kernel);
     break;
   default:
     LOG(FATAL) << "im2col_nd_gpu does not support computation with "
@@ -290,7 +290,7 @@ inline void deformable_masked_im2col(mshadow::Stream<gpu>* s,
 * \brief DO NOT call this directly. Use wrapper function deformable_col2im() instead;
 */
 template <typename DType>
-__global__ void deformable_masked_col2im_gpu_kernel(const int n,
+__global__ void modulated_deformable_col2im_gpu_kernel(const int n,
   const DType* data_col, const DType* data_offset, const DType* data_mask,
   const int channels, const int height, const int width,
   const int kernel_h, const int kernel_w,
@@ -361,7 +361,7 @@ __global__ void deformable_masked_col2im_gpu_kernel(const int n,
  * \param grad_im pointer of images (N, C, H, W,...) in the image batch
  */
 template <typename DType>
-inline void deformable_masked_col2im(mshadow::Stream<gpu>* s,
+inline void modulated_deformable_col2im(mshadow::Stream<gpu>* s,
   const DType* data_col, const DType* data_offset, const DType* data_mask,
   const TShape& im_shape, const TShape& col_shape, const TShape& kernel_shape,
   const TShape& pad, const TShape& stride,
@@ -379,13 +379,13 @@ inline void deformable_masked_col2im(mshadow::Stream<gpu>* s,
     // To avoid involving atomic operations, we will launch one kernel per
     // bottom dimension, and then in the kernel add up the top dimensions.
     // NOLINT_NEXT_LINE(whitespace/operators)
-    deformable_masked_col2im_gpu_kernel<DType><<<cuda_get_num_blocks(num_kernels), mshadow::cuda::kBaseThreadNum,
+    modulated_deformable_col2im_gpu_kernel<DType><<<cuda_get_num_blocks(num_kernels), mshadow::cuda::kBaseThreadNum,
                                0, mshadow::Stream<gpu>::GetStream(s)>>>(
         num_kernels, data_col, data_offset, data_mask, im_shape[1], im_shape[2], im_shape[3],
         kernel_shape[0], kernel_shape[1], pad[0], pad[1], stride[0], stride[1],
         dilation[0], dilation[1], channel_per_deformable_group,
         col_shape[1], deformable_group, col_shape[2], col_shape[3], grad_im, req);
-    MSHADOW_CUDA_POST_KERNEL_CHECK(deformable_masked_col2im_gpu_kernel);
+    MSHADOW_CUDA_POST_KERNEL_CHECK(modulated_deformable_col2im_gpu_kernel);
     break;
   default:
     LOG(FATAL) << "col2im_nd_gpu does not support computation with "
@@ -399,7 +399,7 @@ inline void deformable_masked_col2im(mshadow::Stream<gpu>* s,
  * \brief DO NOT call this directly. Use wrapper function deformable_col2im_coord() instead;
  */
 template <typename DType>
-__global__ void deformable_masked_col2im_coord_gpu_kernel(const int n,
+__global__ void modulated_deformable_col2im_coord_gpu_kernel(const int n,
   const DType* data_col, const DType* data_im,
   const DType* data_offset, const DType* data_mask,
   const int channels, const int height, const int width,
@@ -482,7 +482,7 @@ __global__ void deformable_masked_col2im_coord_gpu_kernel(const int n,
  * \param grad_offset pointer of the offset (N, deformable_group*kernel_h*kernel_w*2, H, W,...) in the offset batch
  */
 template <typename DType>
-inline void deformable_masked_col2im_coord(mshadow::Stream<gpu>* s,
+inline void modulated_deformable_col2im_coord(mshadow::Stream<gpu>* s,
   const DType* data_col, const DType* data_im, const DType* data_offset, const DType* data_mask,
   const TShape& im_shape, const TShape& col_shape, const TShape& kernel_shape,
   const TShape& pad, const TShape& stride,
@@ -500,14 +500,14 @@ inline void deformable_masked_col2im_coord(mshadow::Stream<gpu>* s,
     // bottom dimension, and then in the kernel add up the top dimensions.
     // NOLINT_NEXT_LINE(whitespace/operators)
 
-    deformable_masked_col2im_coord_gpu_kernel<DType> << <cuda_get_num_blocks(num_kernels), mshadow::cuda::kBaseThreadNum,
+    modulated_deformable_col2im_coord_gpu_kernel<DType> << <cuda_get_num_blocks(num_kernels), mshadow::cuda::kBaseThreadNum,
       0, mshadow::Stream<gpu>::GetStream(s) >> >(
         num_kernels, data_col, data_im, data_offset, data_mask, im_shape[1], im_shape[2], im_shape[3],
         kernel_shape[0], kernel_shape[1], pad[0], pad[1], stride[0], stride[1],
         dilation[0], dilation[1], channel_per_deformable_group,
         col_shape[1], 2 * kernel_shape[0] * kernel_shape[1] * deformable_group, deformable_group, col_shape[2], col_shape[3], 
         grad_offset, grad_mask, offset_req, mask_req);
-    MSHADOW_CUDA_POST_KERNEL_CHECK(deformable_masked_col2im_coord_gpu_kernel);
+    MSHADOW_CUDA_POST_KERNEL_CHECK(modulated_deformable_col2im_coord_gpu_kernel);
     break;
   default:
     LOG(FATAL) << "col2im_nd_gpu does not support computation with "

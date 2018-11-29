@@ -1,30 +1,11 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
- * Copyright (c) 2017 Microsoft
- * Licensed under The Apache-2.0 License [see LICENSE for details]
+ * Copyright (c) 2018 Microsoft
+ * Licensed under The MIT License [see LICENSE for details]
  * \file deformable_convolution-inl.h
  * \brief
  * \ref: https://github.com/Yangqing/caffe/wiki/Convolution-in-Caffe:-a-memo
  * \ref: https://arxiv.org/abs/1703.06211
- * \author Yuwen Xiong, Haozhi Qi, Jifeng Dai
+ * \author Yuwen Xiong, Haozhi Qi, Jifeng Dai, Xizhou Zhu, Han Hu
 */
 #ifndef MXNET_OPERATOR_CONTRIB_DEFORMABLE_CONVOLUTION_INL_H_
 #define MXNET_OPERATOR_CONTRIB_DEFORMABLE_CONVOLUTION_INL_H_
@@ -66,7 +47,7 @@ struct DeformableConvolutionParam : public dmlc::Parameter<DeformableConvolution
   uint32_t num_deformable_group;
   uint64_t workspace;
   bool no_bias;
-  uint32_t max_compute_batchsize;
+  uint32_t im2col_step;
   dmlc::optional<int> layout;
   DMLC_DECLARE_PARAMETER(DeformableConvolutionParam) {
     DMLC_DECLARE_FIELD(kernel).describe("Convolution kernel size: (h, w) or (d, h, w)");
@@ -86,8 +67,8 @@ struct DeformableConvolutionParam : public dmlc::Parameter<DeformableConvolution
       .describe("Maximum temperal workspace allowed for convolution (MB).");
     DMLC_DECLARE_FIELD(no_bias).set_default(false)
       .describe("Whether to disable bias parameter.");
-    DMLC_DECLARE_FIELD(max_compute_batchsize).set_default(1)
-      .describe("Maximum number of images per computation.");
+    DMLC_DECLARE_FIELD(im2col_step).set_default(64)
+      .describe("Maximum number of images per im2col computation; The total batch size should be divisable by this value or smaller than this value; if you face out of memory problem, you can try to use a smaller value here.");
     DMLC_DECLARE_FIELD(layout)
       .add_enum("NCW", mshadow::kNCW)
       .add_enum("NCHW", mshadow::kNCHW)
@@ -132,7 +113,7 @@ class DeformableConvolutionOp : public Operator {
     // calculate the shape of col_buffer
     TShape col_buffer_shape(num_spatial_axes_ + 2);
     col_buffer_shape[0] = conv_in_channels_ * param_.kernel.Size();
-    col_buffer_shape[1] = compute_batchsize_;
+    col_buffer_shape[1] = im2col_step_;
     for (index_t i = 2; i < col_buffer_shape.ndim(); ++i) {
       col_buffer_shape[i] = out_data[0].shape_[i];
     }
@@ -145,18 +126,18 @@ class DeformableConvolutionOp : public Operator {
     
     // initialize weight and col_buffer 3D tensors for using gemm
     index_t M = conv_out_channels_ / group_;
-    index_t N = compute_batchsize_ * conv_out_spatial_dim_;
+    index_t N = im2col_step_ * conv_out_spatial_dim_;
     index_t K = kernel_dim_;
     Tensor<xpu, 3, DType> weight_3d = in_data[conv::kWeight].get_with_shape<xpu, 3, DType>(
       Shape3(group_, M, K), s);
     Tensor<xpu, 3, DType> col_buffer_3d = col_buffer.get_with_shape<xpu, 3, DType>(
       Shape3(group_, K, N), s);
     Tensor<xpu, 4, DType> output_4d = output_buffer.get_with_shape<xpu, 4, DType>(
-      Shape4(num_ / compute_batchsize_, group_, M, N), s);
-    for (index_t n = 0; n < num_ / compute_batchsize_; ++n) {
+      Shape4(num_ / im2col_step_, group_, M, N), s);
+    for (index_t n = 0; n < num_ / im2col_step_; ++n) {
       // transform image to col_buffer in order to use gemm
-      deformable_im2col(s, in_data[conv::kData].dptr<DType>() + n*compute_batchsize_*input_dim_,
-        in_data[conv::kOffset].dptr<DType>() + n*compute_batchsize_*input_offset_dim_, in_data[conv::kData].shape_,
+      deformable_im2col(s, in_data[conv::kData].dptr<DType>() + n*im2col_step_*input_dim_,
+        in_data[conv::kOffset].dptr<DType>() + n*im2col_step_*input_offset_dim_, in_data[conv::kData].shape_,
         col_buffer.shape_, param_.kernel, param_.pad, param_.stride, param_.dilate,
         param_.num_deformable_group, col_buffer.dptr<DType>());
       Tensor<xpu, 3, DType> output_3d = output_4d[n];
@@ -168,9 +149,9 @@ class DeformableConvolutionOp : public Operator {
     }
     
     Tensor<xpu, 4, DType> trans_output_4d = output_buffer.get_with_shape<xpu, 4, DType>(
-      Shape4(num_ / compute_batchsize_, conv_out_channels_, compute_batchsize_, conv_out_spatial_dim_), s);
+      Shape4(num_ / im2col_step_, conv_out_channels_, im2col_step_, conv_out_spatial_dim_), s);
     Tensor<xpu, 4, DType> original_output_4d = out_data[conv::kOut].get_with_shape<xpu, 4, DType>(
-      Shape4(num_ / compute_batchsize_, compute_batchsize_, conv_out_channels_, conv_out_spatial_dim_), s);
+      Shape4(num_ / im2col_step_, im2col_step_, conv_out_channels_, conv_out_spatial_dim_), s);
     original_output_4d = swapaxis<2, 1>(trans_output_4d);
       
     if (bias_term_) {
@@ -206,7 +187,7 @@ class DeformableConvolutionOp : public Operator {
     // calculate the shape of col_buffer
     TShape col_buffer_shape(num_spatial_axes_ + 2);
     col_buffer_shape[0] = conv_in_channels_ * param_.kernel.Size();
-    col_buffer_shape[1] = compute_batchsize_;
+    col_buffer_shape[1] = im2col_step_;
     for (index_t i = 2; i < col_buffer_shape.ndim(); ++i) {
       col_buffer_shape[i] = out_grad[conv::kData].shape_[i];
     }
@@ -218,20 +199,20 @@ class DeformableConvolutionOp : public Operator {
     TBlob output_buffer(workspace.dptr_ + col_buffer_size_, output_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
     
     Tensor<xpu, 4, DType> trans_output_4d = output_buffer.get_with_shape<xpu, 4, DType>(
-      Shape4(num_ / compute_batchsize_, conv_out_channels_, compute_batchsize_, conv_out_spatial_dim_), s);
+      Shape4(num_ / im2col_step_, conv_out_channels_, im2col_step_, conv_out_spatial_dim_), s);
     Tensor<xpu, 4, DType> original_output_4d = out_grad[conv::kOut].get_with_shape<xpu, 4, DType>(
-      Shape4(num_ / compute_batchsize_, compute_batchsize_, conv_out_channels_, conv_out_spatial_dim_), s);
+      Shape4(num_ / im2col_step_, im2col_step_, conv_out_channels_, conv_out_spatial_dim_), s);
     trans_output_4d = swapaxis<2, 1>(original_output_4d);
     
     // initialize weight and col_buffer 3D tensors for using gemm
     // For computing dLoss/d(in_data[kData])
     index_t M = kernel_dim_;
-    index_t N = compute_batchsize_ * conv_out_spatial_dim_;
+    index_t N = im2col_step_ * conv_out_spatial_dim_;
     index_t K = conv_out_channels_ / group_;
     Tensor<xpu, 3, DType> weight_3d = in_data[conv::kWeight].get_with_shape<xpu, 3, DType>(
       Shape3(group_, K, M), s);
     Tensor<xpu, 4, DType> out_grad_4d = output_buffer.get_with_shape<xpu, 4, DType>(
-      Shape4(num_ / compute_batchsize_, group_, K, N), s);
+      Shape4(num_ / im2col_step_, group_, K, N), s);
     Tensor<xpu, 3, DType> col_buffer_3d = col_buffer.get_with_shape<xpu, 3, DType>(
       Shape3(group_, M, N), s);
     // For computing dLoss/dWeight
@@ -242,7 +223,7 @@ class DeformableConvolutionOp : public Operator {
     if (req[conv::kData] == kWriteTo)
         data_grad = 0;
 
-    for (index_t n = 0; n < num_ / compute_batchsize_; ++n) {
+    for (index_t n = 0; n < num_ / im2col_step_; ++n) {
       Tensor<xpu, 3, DType> out_grad_3d = out_grad_4d[n];
       for (index_t g = 0; g < group_; ++g) {
         // Legacy approach shown here for comparison:
@@ -252,24 +233,24 @@ class DeformableConvolutionOp : public Operator {
 
       // gradient w.r.t. input coordinate data
       deformable_col2im_coord(s, col_buffer.dptr<DType>(),
-        in_data[conv::kData].dptr<DType>() + n*compute_batchsize_*input_dim_,
-        in_data[conv::kOffset].dptr<DType>() + n*compute_batchsize_*input_offset_dim_,
+        in_data[conv::kData].dptr<DType>() + n*im2col_step_*input_dim_,
+        in_data[conv::kOffset].dptr<DType>() + n*im2col_step_*input_offset_dim_,
         in_grad[conv::kData].shape_, col_buffer.shape_,
         param_.kernel, param_.pad, param_.stride, param_.dilate, param_.num_deformable_group,
-        in_grad[conv::kOffset].dptr<DType>() + n*compute_batchsize_*input_offset_dim_,
+        in_grad[conv::kOffset].dptr<DType>() + n*im2col_step_*input_offset_dim_,
         req[conv::kOffset]);
 
       // gradient w.r.t. input data
       deformable_col2im(s, col_buffer.dptr<DType>(),
-        in_data[conv::kOffset].dptr<DType>() + n*compute_batchsize_*input_offset_dim_,
+        in_data[conv::kOffset].dptr<DType>() + n*im2col_step_*input_offset_dim_,
         in_grad[conv::kData].shape_, col_buffer.shape_,
         param_.kernel, param_.pad, param_.stride, param_.dilate, param_.num_deformable_group,
-        in_grad[conv::kData].dptr<DType>() + n*compute_batchsize_*input_dim_,
+        in_grad[conv::kData].dptr<DType>() + n*im2col_step_*input_dim_,
         req[conv::kData]);
 
       // gradient w.r.t. weight, dWeight should accumulate across the batch and group
-      deformable_im2col(s, in_data[conv::kData].dptr<DType>() + n*compute_batchsize_*input_dim_,
-        in_data[conv::kOffset].dptr<DType>() + n*compute_batchsize_*input_offset_dim_, in_data[conv::kData].shape_,
+      deformable_im2col(s, in_data[conv::kData].dptr<DType>() + n*im2col_step_*input_dim_,
+        in_data[conv::kOffset].dptr<DType>() + n*im2col_step_*input_offset_dim_, in_data[conv::kData].shape_,
         col_buffer.shape_, param_.kernel, param_.pad, param_.stride, param_.dilate,
         param_.num_deformable_group, col_buffer.dptr<DType>());
 
@@ -316,8 +297,8 @@ class DeformableConvolutionOp : public Operator {
     col_offset_ = kernel_dim_ * conv_out_spatial_dim_;
     output_offset_ = conv_out_channels_ * conv_out_spatial_dim_ / group_;
     // size of the column buffer used for storing im2col-ed pixels
-    compute_batchsize_ = std::min(param_.max_compute_batchsize, num_);
-    col_buffer_size_ = kernel_dim_ * group_ * compute_batchsize_ * conv_out_spatial_dim_;
+    im2col_step_ = std::min(param_.im2col_step, num_);
+    col_buffer_size_ = kernel_dim_ * group_ * im2col_step_ * conv_out_spatial_dim_;
     // input/output image size (#channels * height * width)
     input_dim_ = ishape.ProdShape(1, ishape.ndim());
     input_offset_dim_ = offset_shape.ProdShape(1, offset_shape.ndim());
@@ -346,7 +327,7 @@ class DeformableConvolutionOp : public Operator {
   index_t output_dim_;
   index_t num_kernels_im2col_;
   index_t num_kernels_col2im_;
-  index_t compute_batchsize_;
+  index_t im2col_step_;
   bool bias_term_;  // has bias term?
   bool is_1x1_;
 };  // class ConvolutionOp
@@ -417,9 +398,9 @@ class DeformableConvolutionProp : public OperatorProperty {
 
       const index_t ksize_y = static_cast<index_t>(param_.kernel[0]);
       const index_t ksize_x = static_cast<index_t>(param_.kernel[1]);
-      if (dshape[0] > param_.max_compute_batchsize) {
-          CHECK_EQ(dshape[0] % param_.max_compute_batchsize, 0U) \
-            << "input batchsize must be smaller than or divide max_compute_batchsize";
+      if (dshape[0] > param_.im2col_step) {
+          CHECK_EQ(dshape[0] % param_.im2col_step, 0U) \
+            << "input batchsize must be smaller than or divide im2col_step";
       }
       CHECK_EQ(dshape[1] % param_.num_group, 0U) \
         << "input num_filter must divide group size";
