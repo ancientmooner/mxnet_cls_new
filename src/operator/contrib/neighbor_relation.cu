@@ -74,6 +74,8 @@ __global__ void SimilarityComputeForwardKernel(const int n,
                                       const int kernel_width,
                                       const int num_group,
                                       const DType scale,
+                                      const DType no_define_value,
+                                      const int dilate,
                                       DType* output) {
   // n = batch_size * num_group * kernel_height * kernel_width * height * width
   CUDA_KERNEL_LOOP(index, n) { 
@@ -95,13 +97,16 @@ __global__ void SimilarityComputeForwardKernel(const int n,
     const int spatial_dim = height * width;
     DType sum_sim = 0;
     int query_inds = ((b * num_group + g) * key_per_group * height + h) * width + w;
-    if (kw + w - half_kw >= 0 && kw + w - half_kw < width && kh + h - half_kh >= 0 && kh + h - half_kh < height) {
-      int key_inds = ((b * num_group + g) * key_per_group * height + h + kh - half_kh) * width + w + kw - half_kw; 
+    if (w + dilate * (kw - half_kw) >= 0 && w + dilate * (kw - half_kw) < width && h + dilate * (kh - half_kh) >= 0 && h + dilate * (kh - half_kh) < height) {
+      int key_inds = ((b * num_group + g) * key_per_group * height + h + dilate * (kh - half_kh)) * width + w + dilate * (kw - half_kw); 
       for (int i = 0; i < key_per_group; ++i) {
         sum_sim += query[query_inds + i * spatial_dim] * key[key_inds + i * spatial_dim];
       }
+      sum_sim *= scale;
     }
-    sum_sim *= scale;
+    else{
+      sum_sim = no_define_value;
+    }
 
     int pos_inds = (g * kernel_height + kh) * kernel_width + kw;
     sum_sim += pos_weight[pos_inds];
@@ -124,6 +129,7 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
                                       const int num_group,
                                       const int key_per_group,
                                       const DType scale,
+                                      const int dilate,
                                       DType* key_grad,
                                       DType* query_grad) {
   // n = batch_size * num_group * key_per_group * height * width
@@ -147,8 +153,9 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
     DType sum_query_grad = 0;
     for (int kh = 0; kh < kernel_height; ++kh) {
       for (int kw = 0; kw < kernel_width; ++kw) {
-        if (kw + w - half_kw >= 0 && kw + w - half_kw < width && kh + h - half_kh >= 0 && kh + h - half_kh < height) {
-            sum_query_grad += output_grad[output_inds + (kh * kernel_width + kw) * spatial_dim] * key[index + (kh - half_kh) * width + kw - half_kw];
+        if (w + dilate * (kw - half_kw) >= 0 && w + dilate * (kw - half_kw) < width && h + dilate * (kh - half_kh) >= 0 && h + dilate * (kh - half_kh) < height) {
+        //if (kw + w - half_kw >= 0 && kw + w - half_kw < width && kh + h - half_kh >= 0 && kh + h - half_kh < height) {
+            sum_query_grad += output_grad[output_inds + (kh * kernel_width + kw) * spatial_dim] * key[index + dilate * (kh - half_kh) * width + dilate * (kw - half_kw)];
         }
       }
     }
@@ -158,8 +165,8 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
     DType sum_key_grad = 0;
     for (int kh = 0; kh < kernel_height; ++kh) {
       for (int kw = 0; kw < kernel_width; ++kw) {
-        if (w + half_kw - kw >= 0 && w + half_kw - kw < width && h + half_kh - kh >= 0 && h + half_kh - kh < height) {
-            int spatial_offset = (half_kh - kh) * width + half_kw - kw;
+        if (w + dilate * (half_kw - kw) >= 0 && w + dilate * (half_kw - kw) < width && h + dilate * (half_kh - kh) >= 0 && h + dilate * (half_kh - kh) < height) {
+            int spatial_offset = dilate * (half_kh - kh) * width + dilate * (half_kw - kw);
             sum_key_grad += output_grad[output_inds + (kh * kernel_width + kw) 
                          * spatial_dim + spatial_offset] * query[index + spatial_offset];
         }
@@ -274,6 +281,7 @@ __global__ void AggregationForwardKernel(const int n,
                                       const int kernel_height,
                                       const int kernel_width,
                                       const int num_group,
+                                      const int dilate,
                                       DType* output) {
   // n = batch_size * value_channels * height * width
   CUDA_KERNEL_LOOP(index, n) { 
@@ -299,8 +307,8 @@ __global__ void AggregationForwardKernel(const int n,
     int softmax_inds = ((b * num_group + g) * kernel_height * kernel_width * height + h) * width + w;
     for (int kh = 0; kh < kernel_height; ++kh) {
       for (int kw = 0; kw < kernel_width; ++kw) {
-        if (kw + w - half_kw >= 0 && kw + w - half_kw < width && kh + h - half_kh >= 0 && kh + h - half_kh < height) {
-          sum_val += value[value_inds + (kh - half_kh) * width + kw - half_kw] * softmax_data[softmax_inds + kh * kernel_width * spatial_dim + kw * spatial_dim];
+        if (w + dilate * (kw - half_kw) >= 0 && w + dilate * (kw - half_kw) < width && h + dilate * (kh - half_kh) >= 0 && h + dilate * (kh - half_kh) < height) {
+          sum_val += value[value_inds + dilate * (kh - half_kh) * width + dilate * (kw - half_kw)] * softmax_data[softmax_inds + kh * kernel_width * spatial_dim + kw * spatial_dim];
         }
       }
     }
@@ -319,6 +327,7 @@ __global__ void AggregationValueBackwardKernel(const int n,
                                       const int kernel_height,
                                       const int kernel_width,
                                       const int num_group,
+                                      const int dilate,
                                       DType* value_grad) {
   // n = batch_size * value_channels * height * width
   CUDA_KERNEL_LOOP(index, n) { 
@@ -344,8 +353,8 @@ __global__ void AggregationValueBackwardKernel(const int n,
     int softmax_inds = ((b * num_group + g) * kernel_height * kernel_width * height + h) * width + w;
     for (int kh = 0; kh < kernel_height; ++kh) {
       for (int kw = 0; kw < kernel_width; ++kw) {
-        if (w + half_kw - kw >= 0 && w + half_kw - kw < width && h + half_kh - kh >= 0 && h + half_kh - kh < height) {
-          int spatial_offset = (half_kh - kh) * width + half_kw - kw;
+        if (w + dilate * (half_kw - kw) >= 0 && w + dilate * (half_kw - kw) < width && h + dilate * (half_kh - kh) >= 0 && h + dilate * (half_kh - kh) < height) {
+          int spatial_offset = dilate * (half_kh - kh) * width + dilate * (half_kw - kw);
           sum_val += output_grad[value_inds + spatial_offset] * softmax_data[softmax_inds + spatial_offset + (kh * kernel_width + kw) * spatial_dim];
         }
       }
@@ -365,6 +374,7 @@ __global__ void AggregationSoftmaxBackwardKernel(const int n,
                                       const int kernel_height,
                                       const int kernel_width,
                                       const int num_group,
+                                      const int dilate,
                                       DType* softmax_grad) {
   // n = batch_size * num_group * kernel_height * kernel_width * height * width
   CUDA_KERNEL_LOOP(index, n) { 
@@ -389,9 +399,9 @@ __global__ void AggregationSoftmaxBackwardKernel(const int n,
 
     int value_inds = ((b * num_group + g) * value_per_group * height + h) * width + w;
     
-    if (w + kw - half_kw >= 0 && w + kw - half_kw < width && h + kh - half_kh >= 0 && h + kh - half_kh < height) {
+    if (w + dilate * (kw - half_kw) >= 0 && w + dilate * (kw - half_kw) < width && h + dilate * (kh - half_kh) >= 0 && h + dilate * (kh - half_kh) < height) {
       for (int iv = 0; iv < value_per_group; ++iv) {
-        sum_val += output_grad[value_inds + iv * spatial_dim] * value[value_inds + iv * spatial_dim + (kh - half_kh) * width + kw - half_kw];
+        sum_val += output_grad[value_inds + iv * spatial_dim] * value[value_inds + iv * spatial_dim + dilate * (kh - half_kh) * width + dilate * (kw - half_kw)];
       }
     }
     softmax_grad[index] = sum_val;
@@ -480,6 +490,8 @@ class NeighborRelationGPUOp : public Operator{
                                       param_.kernel_size,
                                       param_.num_group,
                                       param_.scale,
+                                      param_.no_define_value,
+                                      param_.dilate,
                                       sim_buffer_tensor.dptr_);
         MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeForwardKernel);
 
@@ -499,6 +511,7 @@ class NeighborRelationGPUOp : public Operator{
                                       param_.kernel_size,
                                       param_.kernel_size,
                                       param_.num_group,
+                                      param_.dilate,
                                       output.dptr_ + i * value_step * i);
         MSHADOW_CUDA_POST_KERNEL_CHECK(AggregationForwardKernel);
     }
@@ -616,6 +629,8 @@ class NeighborRelationGPUOp : public Operator{
                                       param_.kernel_size,
                                       param_.num_group,
                                       param_.scale,
+                                      param_.no_define_value,
+                                      param_.dilate,
                                       sim_buffer_tensor.dptr_);
         MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeForwardKernel);
 
@@ -635,6 +650,7 @@ class NeighborRelationGPUOp : public Operator{
                                       param_.kernel_size,
                                       param_.kernel_size,
                                       param_.num_group,
+                                      param_.dilate,
                                       value_grad.dptr_ + i * value_step);
         MSHADOW_CUDA_POST_KERNEL_CHECK(AggregationValueBackwardKernel);
 
@@ -651,6 +667,7 @@ class NeighborRelationGPUOp : public Operator{
                                       param_.kernel_size,
                                       param_.kernel_size,
                                       param_.num_group,
+                                      param_.dilate,
                                       sim_buffer_tensor.dptr_);
         MSHADOW_CUDA_POST_KERNEL_CHECK(AggregationSoftmaxBackwardKernel);
 
@@ -676,6 +693,7 @@ class NeighborRelationGPUOp : public Operator{
                                       param_.num_group,
                                       key_per_group,
                                       param_.scale,
+                                      param_.dilate,
                                       key_grad.dptr_ + i * key_step,
                                       query_grad.dptr_ + i * key_step);
         MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeBackwardKernel);

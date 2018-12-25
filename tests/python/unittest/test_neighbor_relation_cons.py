@@ -18,8 +18,8 @@ os.environ['MXNET_ENGINE_TYPE'] = 'NaiveEngine'
 #os.environ['MXNET_ENGINE_TYPE'] = 'ThreadedEnginePerDevice'
 #os.environ['MXNET_CUDNN_AUTOTUNE_DEFAULT'] = '2'
 
-def get_offset_grids(batch_size, height, width, kernel_size=7):
-    k_arange = mx.sym.arange(0, kernel_size) - int(kernel_size / 2)
+def get_offset_grids(batch_size, height, width, kernel_size=7, dilate=1):
+    k_arange = (mx.sym.arange(0, kernel_size) - int(kernel_size / 2)) * dilate
     offsets_x = mx.sym.tile(mx.sym.reshape(k_arange, (1, -1, 1, 1, 1)), reps=(kernel_size, 1, 1, height, width))
     offsets_y = mx.sym.tile(mx.sym.reshape(k_arange, (-1, 1, 1, 1, 1)), reps=(1, kernel_size, 1, height, width))
 
@@ -30,12 +30,11 @@ def get_offset_grids(batch_size, height, width, kernel_size=7):
     #[batch_size, 2, height * 49, width]
     offset_grids_repeat = mx.sym.tile(mx.sym.reshape(mx.sym.transpose(offset_grids, axes=(1, 0, 2, 3)), shape=(0, -3, -2)), reps=(batch_size, 1, 1, 1))
     offset_grids_repeat = mx.sym.BlockGrad(offset_grids_repeat)
-    offset_grids_repeat._set_attr(mirror_stage='True')
     return offset_grids_repeat 
 
-def neighbor_relation_v1(value_data, key_data, query_data, pos_weight, scale, batch_size, cur_height, cur_width, num_group=32, kernel_size=7):
+def neighbor_relation_v1(value_data, key_data, query_data, pos_weight, scale, batch_size, cur_height, cur_width, num_group=32, kernel_size=7, dilate=1):
     
-    offset_grids_repeat = get_offset_grids(batch_size, cur_height, cur_width, kernel_size=kernel_size)
+    offset_grids_repeat = get_offset_grids(batch_size, cur_height, cur_width, kernel_size=kernel_size, dilate=dilate)
     # [batch_size, key_channels, height * 49, width]
     warp_key_data = mx.sym.BilinearSampler(data=key_data, grid=offset_grids_repeat)
     # [batch_size, key_channels, 49, height, width]
@@ -67,10 +66,10 @@ def neighbor_relation_v1(value_data, key_data, query_data, pos_weight, scale, ba
     output_value = mx.sym.reshape(mx.sym.sum(mx.sym.broadcast_mul(app_geo_sim, warp_value_data_reshape), axis=3), shape=(0, -3, -2))
     return mx.sym.MakeLoss(output_value)
 
-def neighbor_relation_v2(value_data, key_data, query_data, pos_weight, scale, batch_size, cur_height, cur_width, num_group=32, kernel_size=7):
+def neighbor_relation_v2(value_data, key_data, query_data, pos_weight, scale, batch_size, cur_height, cur_width, num_group=32, kernel_size=7, dilate=1):
     
     output_value = mx.sym.contrib.NeighborRelation(key=key_data, value=value_data, query=query_data, 
-                    pos_weight=pos_weight, scale=scale, num_group=num_group, kernel_size=kernel_size, batch_step=4)
+                    pos_weight=pos_weight, scale=scale, num_group=num_group, kernel_size=kernel_size, dilate=dilate, batch_step=4)
     return mx.sym.MakeLoss(output_value)
 
 def consistent_check(key_shape, value_shape, kernel_size=7, num_group=32, test_bp=False):
@@ -104,9 +103,9 @@ def consistent_check(key_shape, value_shape, kernel_size=7, num_group=32, test_b
     value_channels = value_shape[1]
 
     scale = 1.0
-    neighbor_relation_out_v2 = neighbor_relation_v2(value_data, key_data, query_data, pos_weight_data, scale, batch_size, height, width, num_group=num_group, kernel_size=kernel_size)
+    neighbor_relation_out_v2 = neighbor_relation_v2(value_data, key_data, query_data, pos_weight_data, scale, batch_size, height, width, num_group=num_group, kernel_size=kernel_size, dilate=4)
     
-    neighbor_relation_out_v1 = neighbor_relation_v1(t_value_data, t_key_data, t_query_data, t_pos_weight_data, scale, batch_size, height, width, num_group=num_group, kernel_size=kernel_size)
+    neighbor_relation_out_v1 = neighbor_relation_v1(t_value_data, t_key_data, t_query_data, t_pos_weight_data, scale, batch_size, height, width, num_group=num_group, kernel_size=kernel_size, dilate=4)
 
     neighbor_relation_methods = [neighbor_relation_out_v2, neighbor_relation_out_v1]
     neighbor_relation_method = neighbor_relation_out_v2
