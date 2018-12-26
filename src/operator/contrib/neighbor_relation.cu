@@ -76,6 +76,7 @@ __global__ void SimilarityComputeForwardKernel(const int n,
                                       const DType scale,
                                       const DType no_define_value,
                                       const int dilate,
+                                      const int sim_method,
                                       DType* output) {
   // n = batch_size * num_group * kernel_height * kernel_width * height * width
   CUDA_KERNEL_LOOP(index, n) { 
@@ -100,7 +101,12 @@ __global__ void SimilarityComputeForwardKernel(const int n,
     if (w + dilate * (kw - half_kw) >= 0 && w + dilate * (kw - half_kw) < width && h + dilate * (kh - half_kh) >= 0 && h + dilate * (kh - half_kh) < height) {
       int key_inds = ((b * num_group + g) * key_per_group * height + h + dilate * (kh - half_kh)) * width + w + dilate * (kw - half_kw); 
       for (int i = 0; i < key_per_group; ++i) {
-        sum_sim += query[query_inds + i * spatial_dim] * key[key_inds + i * spatial_dim];
+        if (sim_method == 0) {
+          sum_sim += query[query_inds + i * spatial_dim] * key[key_inds + i * spatial_dim];
+        }
+        else {
+          sum_sim += query[query_inds + i * spatial_dim] + key[key_inds + i * spatial_dim];
+        }
       }
       sum_sim *= scale;
     }
@@ -130,6 +136,7 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
                                       const int key_per_group,
                                       const DType scale,
                                       const int dilate,
+                                      const int sim_method,
                                       DType* key_grad,
                                       DType* query_grad) {
   // n = batch_size * num_group * key_per_group * height * width
@@ -155,7 +162,12 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
       for (int kw = 0; kw < kernel_width; ++kw) {
         if (w + dilate * (kw - half_kw) >= 0 && w + dilate * (kw - half_kw) < width && h + dilate * (kh - half_kh) >= 0 && h + dilate * (kh - half_kh) < height) {
         //if (kw + w - half_kw >= 0 && kw + w - half_kw < width && kh + h - half_kh >= 0 && kh + h - half_kh < height) {
+          if (sim_method == 0) {
             sum_query_grad += output_grad[output_inds + (kh * kernel_width + kw) * spatial_dim] * key[index + dilate * (kh - half_kh) * width + dilate * (kw - half_kw)];
+          }
+          else {
+            sum_query_grad += output_grad[output_inds + (kh * kernel_width + kw) * spatial_dim];
+          }
         }
       }
     }
@@ -167,8 +179,14 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
       for (int kw = 0; kw < kernel_width; ++kw) {
         if (w + dilate * (half_kw - kw) >= 0 && w + dilate * (half_kw - kw) < width && h + dilate * (half_kh - kh) >= 0 && h + dilate * (half_kh - kh) < height) {
             int spatial_offset = dilate * (half_kh - kh) * width + dilate * (half_kw - kw);
-            sum_key_grad += output_grad[output_inds + (kh * kernel_width + kw) 
+            if (sim_method == 0) {
+              sum_key_grad += output_grad[output_inds + (kh * kernel_width + kw) 
                          * spatial_dim + spatial_offset] * query[index + spatial_offset];
+            }
+            else {
+              sum_key_grad += output_grad[output_inds + (kh * kernel_width + kw) 
+                         * spatial_dim + spatial_offset];
+            }
         }
       }
     }
@@ -455,7 +473,7 @@ class NeighborRelationGPUOp : public Operator{
     int value_step = batch_step_ * value_channels * height * width;
 
     Tensor<xpu, 1, DType> workspace = ctx.requested[neighborRelation::kTempSpace]
-            .get_space_typed<xpu, 1, DType>(Shape1(2 * sim_size), s);
+            .get_space_typed<xpu, 1, DType>(Shape1(2 * sim_size + batch_step_ * param_.num_group * height * width), s);
     
     TShape sim_buffer_shape(3);
     sim_buffer_shape[0] = batch_step_ * param_.num_group;
@@ -467,6 +485,13 @@ class NeighborRelationGPUOp : public Operator{
     
     TBlob softmax_buffer(workspace.dptr_ + sim_size, sim_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
     Tensor<xpu, 3, DType> softmax_buffer_tensor = softmax_buffer.get<xpu, 3, DType>(s);
+
+    TShape sum_softmax_buffer_shape(2);
+    sum_softmax_buffer_shape[0] = batch_step_ * param_.num_group;
+    sum_softmax_buffer_shape[1] = height * width;
+
+    TBlob sum_softmax_buffer(workspace.dptr_ + sim_size * 2, sum_softmax_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+    Tensor<xpu, 2, DType> sum_softmax_buffer_tensor = sum_softmax_buffer.get<xpu, 2, DType>(s);
     
     int M = (batch_size - 1) / batch_step_ + 1;
     for (int i = 0; i < M; ++i) {
@@ -492,11 +517,19 @@ class NeighborRelationGPUOp : public Operator{
                                       param_.scale,
                                       param_.no_define_value,
                                       param_.dilate,
+                                      param_.sim_method,
                                       sim_buffer_tensor.dptr_);
         MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeForwardKernel);
 
-        // softmax
-        Softmax(softmax_buffer_tensor, sim_buffer_tensor);
+        // softmax forward
+        if (param_.norm_method == 0) {
+          Softmax(softmax_buffer_tensor, sim_buffer_tensor);
+        }
+        else if (param_.norm_method == 1) {
+          Assign(sim_buffer_tensor, kWriteTo, F<mshadow_op::relu>(sim_buffer_tensor));
+          sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(sim_buffer_tensor, 1) + scalar<DType>(1e-6);
+          Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 0, param_.kernel_size * param_.kernel_size));
+        }
        
         //
         AggregationForwardKernel
@@ -631,11 +664,19 @@ class NeighborRelationGPUOp : public Operator{
                                       param_.scale,
                                       param_.no_define_value,
                                       param_.dilate,
+                                      param_.sim_method,
                                       sim_buffer_tensor.dptr_);
         MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeForwardKernel);
 
         // softmax forward
-        Softmax(softmax_buffer_tensor, sim_buffer_tensor);
+        if (param_.norm_method == 0) {
+          Softmax(softmax_buffer_tensor, sim_buffer_tensor);
+        }
+        else if (param_.norm_method == 1) {
+          Assign(sim_buffer_tensor, kWriteTo, F<mshadow_op::relu>(sim_buffer_tensor));
+          sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(sim_buffer_tensor, 1) + scalar<DType>(1e-6);
+          Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 0, param_.kernel_size * param_.kernel_size));
+        }
 
         // backward to value
         AggregationValueBackwardKernel
@@ -673,9 +714,16 @@ class NeighborRelationGPUOp : public Operator{
 
         // backward softmax
         // grad of sim written to sim_buffer_tensor
-        sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(softmax_buffer_tensor * sim_buffer_tensor, 1);
-        Assign(sim_grad_buffer_tensor, kWriteTo,
+        if (param_.norm_method == 0) {
+          sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(softmax_buffer_tensor * sim_buffer_tensor, 1);
+          Assign(sim_grad_buffer_tensor, kWriteTo,
                  softmax_buffer_tensor * (sim_buffer_tensor - broadcast_with_axis(sum_softmax_buffer_tensor, 0, param_.kernel_size * param_.kernel_size)));
+        } 
+        else if (param_.norm_method == 1) {
+          Assign(sim_grad_buffer_tensor, kWriteTo,
+                 (sim_buffer_tensor - broadcast_with_axis(reduce_with_axis<red::sum, false>(softmax_buffer_tensor * sim_buffer_tensor, 1), 0, param_.kernel_size * param_.kernel_size)) / broadcast_with_axis(sum_softmax_buffer_tensor, 0, param_.kernel_size * param_.kernel_size));
+          Assign(sim_grad_buffer_tensor, kWriteTo, F<mshadow_op::relu_grad>(softmax_buffer_tensor) * sim_grad_buffer_tensor);
+        }
         
         // backward to key & query
         SimilarityComputeBackwardKernel<DType>
@@ -694,6 +742,7 @@ class NeighborRelationGPUOp : public Operator{
                                       key_per_group,
                                       param_.scale,
                                       param_.dilate,
+                                      param_.sim_method,
                                       key_grad.dptr_ + i * key_step,
                                       query_grad.dptr_ + i * key_step);
         MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeBackwardKernel);

@@ -41,6 +41,8 @@ struct NeighborRelationParam : public dmlc::Parameter<NeighborRelationParam> {
   int stride;
   float scale;
   float no_define_value;
+  int norm_method;
+  int sim_method;
   DMLC_DECLARE_PARAMETER(NeighborRelationParam) {
     DMLC_DECLARE_FIELD(num_group).set_default(32)
       .describe("Number of relation groups.");
@@ -54,6 +56,10 @@ struct NeighborRelationParam : public dmlc::Parameter<NeighborRelationParam> {
       .describe("scale of relation computation.");
     DMLC_DECLARE_FIELD(no_define_value).set_default(0.0)
       .describe("the value of similairty when no definition is giving.");
+    DMLC_DECLARE_FIELD(norm_method).set_default(0)
+      .describe("0: softmax; 1: ReLU-Norm");
+    DMLC_DECLARE_FIELD(sim_method).set_default(0)
+      .describe("0: dot; 1: add");
   }
 };
 
