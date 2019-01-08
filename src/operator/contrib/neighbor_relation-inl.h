@@ -19,6 +19,7 @@
 #include <iostream>
 #include "../operator_common.h"
 #include "../mshadow_op.h"
+#include "../random/sampler.h"
 
 
 namespace mxnet {
@@ -28,13 +29,14 @@ namespace op {
 
 namespace neighborRelation {
 enum NeighborRelationOpInputs {kValue, kKey, kQuery, kPos};
-enum NeighborRelationOpOutputs {kOutput};
-enum NeighborRelationForwardResource {kTempSpace};
+enum NeighborRelationOpOutputs {kOutput, kMask};
+enum NeighborRelationForwardResource {kTempSpace, kRandomGen};
 }  // neighborRelation
 
 struct NeighborRelationParam : public dmlc::Parameter<NeighborRelationParam> {
   
   int num_group;
+  int key_dim;
   int kernel_size;
   int batch_step;
   int dilate;
@@ -43,9 +45,12 @@ struct NeighborRelationParam : public dmlc::Parameter<NeighborRelationParam> {
   float no_define_value;
   int norm_method;
   int sim_method;
+  float dropout_ratio;
   DMLC_DECLARE_PARAMETER(NeighborRelationParam) {
     DMLC_DECLARE_FIELD(num_group).set_default(32)
       .describe("Number of relation groups.");
+    DMLC_DECLARE_FIELD(key_dim).set_default(8)
+      .describe("Number of key_dim.");
     DMLC_DECLARE_FIELD(kernel_size).set_default(7)
       .describe("kernel size of relation computation.");
     DMLC_DECLARE_FIELD(batch_step).set_default(32)
@@ -60,6 +65,8 @@ struct NeighborRelationParam : public dmlc::Parameter<NeighborRelationParam> {
       .describe("0: softmax; 1: ReLU-Norm");
     DMLC_DECLARE_FIELD(sim_method).set_default(0)
       .describe("0: dot; 1: add");
+    DMLC_DECLARE_FIELD(dropout_ratio).set_default(0.0)
+      .describe("dropout ratio");
   }
 };
 
@@ -113,6 +120,24 @@ class NeighborRelationProp : public OperatorProperty {
     //oshape[3] = (int) ((vshape[3] - 1) / param_.stride) + 1;
     out_shape->clear();
     out_shape->push_back(vshape);
+
+    if (param_.dropout_ratio > 0) {
+      TShape mshape(3);
+      mshape[0] = qshape[0] * param_.num_group;
+      mshape[1] = param_.kernel_size * param_.kernel_size;
+      mshape[2] = qshape[2] * qshape[3];
+      out_shape->push_back(mshape);
+      //printf("dropout:0, %.4f\n", param_.dropout_ratio);
+      //CHECK_LE(out_shape->size(), -1) << "param_.dropout_ratio > 0" << param_.dropout_ratio;
+    }
+    //else {
+      //printf("dropout:0, %.4f\n", param_.dropout_ratio);
+      //CHECK_LT(out_shape->size(), -1) << "param_.dropout_ratio == 0" << param_.dropout_ratio;
+    //}
+    //printf("output shape size: %d\n", out_shape->size());
+    //printf("dropout:2\n");
+    //printf("dropout:0, %.4f\n", param_.dropout_ratio);
+    //CHECK_LE(out_shape->size(), 1) << "out shape size should equal 2, dropout ratio = " << param_.dropout_ratio;
     return true; 
   }
 
@@ -128,7 +153,12 @@ class NeighborRelationProp : public OperatorProperty {
 
   std::vector<ResourceRequest> ForwardResource(
       const std::vector<TShape> &in_shape) const override {
-    return{ ResourceRequest::kTempSpace };
+    if (param_.dropout_ratio > 0) {
+      return{ ResourceRequest::kTempSpace, ResourceRequest::kParallelRandom};
+    }
+    else {
+      return{ ResourceRequest::kTempSpace };
+    }
   }
   
   std::vector<ResourceRequest> BackwardResource(
@@ -148,11 +178,26 @@ class NeighborRelationProp : public OperatorProperty {
   }
 
   int NumVisibleOutputs() const override {
+    //if (param_.dropout_ratio > 0) {
+      //printf("vis output num: 2\n");
+      //return 2;
+    //}
+    //else {
+      //printf("vis output num: 1\n");
+      //return 1;
+    //}
     return 1;
   }
 
   int NumOutputs() const override {
-    return 1;
+    if (param_.dropout_ratio > 0) {
+      //printf("output num: 2\n");
+      return 2;
+    }
+    else {
+      //printf("output num: 1\n");
+      return 1;
+    }
   }
 
   std::vector<std::string> ListArguments() const override {
@@ -160,7 +205,13 @@ class NeighborRelationProp : public OperatorProperty {
   }
 
   std::vector<std::string> ListOutputs() const override {
-    return {"output"};
+    if (param_.dropout_ratio > 0) {
+      //printf("output num (mask): 2\n");
+      return {"output", "mask"};
+    }
+    else {
+      return {"output"};
+    }
   }
 
   Operator* CreateOperator(Context ctx) const override {

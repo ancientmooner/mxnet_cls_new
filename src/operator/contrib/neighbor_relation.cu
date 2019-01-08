@@ -327,9 +327,19 @@ __global__ void AggregationForwardKernel(const int n,
       for (int kw = 0; kw < kernel_width; ++kw) {
         if (w + dilate * (kw - half_kw) >= 0 && w + dilate * (kw - half_kw) < width && h + dilate * (kh - half_kh) >= 0 && h + dilate * (kh - half_kh) < height) {
           sum_val += value[value_inds + dilate * (kh - half_kh) * width + dilate * (kw - half_kw)] * softmax_data[softmax_inds + kh * kernel_width * spatial_dim + kw * spatial_dim];
+           //if ((value_inds) == 10001) {
+           //     printf("b: %d, g: %d, h: %d, w: %d, softmax_inds: %d, value_inds: %d, sum_val: %.4f, k:%d, w:%d, softmax: %.4f, val: %.4f\n", 
+           //         b, g, h, w, softmax_inds, value_inds, sum_val, kh, kw,
+           //         softmax_data[softmax_inds + kh * kernel_width * spatial_dim + kw * spatial_dim],
+           //         value[value_inds + dilate * (kh - half_kh) * width + dilate * (kw - half_kw)]);
+           //   }
         }
       }
     }
+    //if (value_inds % 10000 == 1) {
+    //  printf("b: %d, g: %d, h: %d, w: %d, softmax_inds: %d, value_inds: %d, sum_val: %.4f\n", 
+    //                b, g, h, w, softmax_inds, value_inds, sum_val);
+    //}
     output[value_inds] = sum_val;
   }
 }
@@ -439,6 +449,36 @@ class NeighborRelationGPUOp : public Operator{
   explicit NeighborRelationGPUOp(NeighborRelationParam param) {
     this->param_ = param;
   }
+  /*!
+   * \brief Dropout kernel, compute dropout tensor
+   */
+  struct CDropoutKernel {
+    /*!
+     * \brief Dropout kernel function
+     * \param id Thread number (0-based representing count)
+     * \param gen Random number generator
+     * \param N Total number of items in the output
+     * \param step Step between items, related to parallelism
+     * \param dropout_out Output dropout values
+     * \param mask_out  Output mask (is multiplied to create dropout output, may be 0)
+     * \param input_data Input data to perform the dropout on
+     * \param pkeep Dropout rate (keep when the generated random number is less than this value)
+     */
+    MSHADOW_XINLINE static void Map(int id,
+                                    RandGenerator<xpu, DType> gen,
+                                    const int N,
+                                    const int step,
+                                    DType *dropout_out,
+                                    DType *mask_out,
+                                    const DType *input_data,
+                                    const real_t pkeep) {
+      RNG_KERNEL_LOOP(xpu, DType, id, gen, N, step, {
+        const real_t rand_num = static_cast<real_t>(genImpl.uniform());
+        mask_out[i] = mshadow_op::threshold::Map<real_t>(rand_num, pkeep) * (1.0f / pkeep);
+        dropout_out[i] = input_data[i] * mask_out[i];
+      });
+    }
+  };
 
   virtual void Forward(const OpContext &ctx,
                        const std::vector<TBlob> &in_data,
@@ -492,7 +532,13 @@ class NeighborRelationGPUOp : public Operator{
 
     TBlob sum_softmax_buffer(workspace.dptr_ + sim_size * 2, sum_softmax_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
     Tensor<xpu, 2, DType> sum_softmax_buffer_tensor = sum_softmax_buffer.get<xpu, 2, DType>(s);
-    
+   
+    Tensor<xpu, 3, DType> mask;
+    RandGenerator<xpu, DType> *pgen;
+    if (ctx.is_train && param_.dropout_ratio > 0) {
+        mask = out_data[neighborRelation::kMask].get<xpu, 3, DType>(s);
+        pgen = ctx.requested[neighborRelation::kRandomGen].get_parallel_random<xpu, DType>();
+    }
     int M = (batch_size - 1) / batch_step_ + 1;
     for (int i = 0; i < M; ++i) {
         int cur_batch_step = batch_step_;
@@ -530,6 +576,15 @@ class NeighborRelationGPUOp : public Operator{
           sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(sim_buffer_tensor, 1) + scalar<DType>(1e-6);
           Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 0, param_.kernel_size * param_.kernel_size));
         }
+
+        if (ctx.is_train && param_.dropout_ratio > 0) {
+          LaunchRNG<CDropoutKernel, xpu>(s, pgen, sim_size,
+                                        softmax_buffer_tensor.dptr_,
+                                        mask.dptr_ + sim_size * i,
+                                        softmax_buffer_tensor.dptr_,
+                                        1.0 - param_.dropout_ratio);
+        
+        }
        
         //
         AggregationForwardKernel
@@ -545,7 +600,7 @@ class NeighborRelationGPUOp : public Operator{
                                       param_.kernel_size,
                                       param_.num_group,
                                       param_.dilate,
-                                      output.dptr_ + i * value_step * i);
+                                      output.dptr_ + i * value_step);
         MSHADOW_CUDA_POST_KERNEL_CHECK(AggregationForwardKernel);
     }
 
@@ -576,7 +631,11 @@ class NeighborRelationGPUOp : public Operator{
     Tensor<xpu, 4, DType> value_grad = in_grad[neighborRelation::kValue].get<xpu, 4, DType>(s);
     //Tensor<xpu, 3, DType> pos_weight_grad = in_grad[neighborRelation::kPos].get<xpu, 3, DType>(s);
     Tensor<xpu, 1, DType> pos_weight_grad_1d = in_grad[neighborRelation::kPos].get_with_shape<xpu, 1, DType>(Shape1(param_.num_group * param_.kernel_size* param_.kernel_size), s);
-
+    
+    Tensor<xpu, 3, DType> mask;
+    if (ctx.is_train && param_.dropout_ratio > 0) {
+      mask = out_data[neighborRelation::kMask].get<xpu, 3, DType>(s);
+    }
 
     if (req[neighborRelation::kKey] == kWriteTo) {
       key_grad = 0;
@@ -712,6 +771,12 @@ class NeighborRelationGPUOp : public Operator{
                                       sim_buffer_tensor.dptr_);
         MSHADOW_CUDA_POST_KERNEL_CHECK(AggregationSoftmaxBackwardKernel);
 
+        if (ctx.is_train && param_.dropout_ratio > 0) {
+            TBlob mask_buffer(mask.dptr_ + sim_size * i, sim_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+            Tensor<xpu, 3, DType> mask_buffer_tensor = mask_buffer.get<xpu, 3, DType>(s);
+            
+            Assign(sim_buffer_tensor, kWriteTo, sim_buffer_tensor * mask_buffer_tensor);
+        }
         // backward softmax
         // grad of sim written to sim_buffer_tensor
         if (param_.norm_method == 0) {
