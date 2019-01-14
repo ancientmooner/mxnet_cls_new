@@ -97,7 +97,10 @@ __global__ void SimilarityComputeForwardKernel(const int n,
     
     const int spatial_dim = height * width;
     DType sum_sim = 0;
-    int query_inds = ((b * num_group + g) * key_per_group * height + h) * width + w;
+    int query_inds = 0;
+    if (sim_method == 0) {
+      query_inds = ((b * num_group + g) * key_per_group * height + h) * width + w;
+    }
     if (w + dilate * (kw - half_kw) >= 0 && w + dilate * (kw - half_kw) < width && h + dilate * (kh - half_kh) >= 0 && h + dilate * (kh - half_kh) < height) {
       int key_inds = ((b * num_group + g) * key_per_group * height + h + dilate * (kh - half_kh)) * width + w + dilate * (kw - half_kw); 
       for (int i = 0; i < key_per_group; ++i) {
@@ -105,7 +108,7 @@ __global__ void SimilarityComputeForwardKernel(const int n,
           sum_sim += query[query_inds + i * spatial_dim] * key[key_inds + i * spatial_dim];
         }
         else {
-          sum_sim += query[query_inds + i * spatial_dim] + key[key_inds + i * spatial_dim];
+          sum_sim += key[key_inds + i * spatial_dim];
         }
       }
       sum_sim *= scale;
@@ -158,21 +161,19 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
     //int query_inds = ((b * num_group + g) * key_per_group * height + h) * width + w;
     int output_inds = ((b * num_group + g) * kernel_height * kernel_width * height + h) * width + w; 
     DType sum_query_grad = 0;
-    for (int kh = 0; kh < kernel_height; ++kh) {
-      for (int kw = 0; kw < kernel_width; ++kw) {
-        if (w + dilate * (kw - half_kw) >= 0 && w + dilate * (kw - half_kw) < width && h + dilate * (kh - half_kh) >= 0 && h + dilate * (kh - half_kh) < height) {
-        //if (kw + w - half_kw >= 0 && kw + w - half_kw < width && kh + h - half_kh >= 0 && kh + h - half_kh < height) {
-          if (sim_method == 0) {
+
+    if (sim_method == 0) {
+      for (int kh = 0; kh < kernel_height; ++kh) {
+        for (int kw = 0; kw < kernel_width; ++kw) {
+          if (w + dilate * (kw - half_kw) >= 0 && w + dilate * (kw - half_kw) < width && h + dilate * (kh - half_kh) >= 0 && h + dilate * (kh - half_kh) < height) {
+          //if (kw + w - half_kw >= 0 && kw + w - half_kw < width && kh + h - half_kh >= 0 && kh + h - half_kh < height) {
             sum_query_grad += output_grad[output_inds + (kh * kernel_width + kw) * spatial_dim] * key[index + dilate * (kh - half_kh) * width + dilate * (kw - half_kw)];
-          }
-          else {
-            sum_query_grad += output_grad[output_inds + (kh * kernel_width + kw) * spatial_dim];
           }
         }
       }
+      sum_query_grad *= scale;
+      query_grad[index] += sum_query_grad;
     }
-    sum_query_grad *= scale;
-    query_grad[index] += sum_query_grad;
 
     DType sum_key_grad = 0;
     for (int kh = 0; kh < kernel_height; ++kh) {
