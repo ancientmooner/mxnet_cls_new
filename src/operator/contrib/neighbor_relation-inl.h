@@ -57,6 +57,8 @@ struct NeighborRelationParam : public dmlc::Parameter<NeighborRelationParam> {
       .describe("one time batch relation computation. Must be divided by batch_size");
     DMLC_DECLARE_FIELD(dilate).set_default(1)
       .describe("dilate value");
+    DMLC_DECLARE_FIELD(stride).set_default(1)
+      .describe("stride value");
     DMLC_DECLARE_FIELD(scale).set_default(1.0)
       .describe("scale of relation computation.");
     DMLC_DECLARE_FIELD(no_define_value).set_default(0.0)
@@ -104,22 +106,22 @@ class NeighborRelationProp : public OperatorProperty {
     CHECK_EQ(vshape[0], kshape[0]) << "value and key should have the same batch size";
     CHECK_EQ(vshape[2], kshape[2]) << "value and key should have the same height";
     CHECK_EQ(vshape[3], kshape[3]) << "value and key should have the same width";
-    CHECK_EQ(vshape[0], qshape[0]) << "value and query should have the same batch size";
-    CHECK_EQ(vshape[2], qshape[2]) << "value and query should have the same height";
-    CHECK_EQ(vshape[3], qshape[3]) << "value and query should have the same width";
+    //CHECK_EQ(vshape[0], qshape[0]) << "value and query should have the same batch size";
+    //CHECK_EQ(vshape[2], qshape[2]) << "value and query should have the same height";
+    //CHECK_EQ(vshape[3], qshape[3]) << "value and query should have the same width";
     
     CHECK_EQ(kshape[1], qshape[1]) << "key and query should have the same channel dim";
     
     const TShape &pshape = in_shape->at(neighborRelation::kPos);
     //CHECK_EQ(pshape[0], param_.num_group) << "pos_weight must be of shape [num_group, kernel_y, kenel_x]";
 
-    //TShape oshape(4);
-    //oshape[0] = vshape[0];
-    //oshape[1] = vshape[1];
-    //oshape[2] = (int) ((vshape[2] - 1) / param_.stride) + 1;
-    //oshape[3] = (int) ((vshape[3] - 1) / param_.stride) + 1;
+    TShape oshape(4);
+    oshape[0] = vshape[0];
+    oshape[1] = vshape[1];
+    oshape[2] = (int) ((vshape[2] - 1) / param_.stride) + 1;
+    oshape[3] = (int) ((vshape[3] - 1) / param_.stride) + 1;
     out_shape->clear();
-    out_shape->push_back(vshape);
+    out_shape->push_back(oshape);
 
     if (param_.dropout_ratio > 0) {
       TShape mshape(3);
