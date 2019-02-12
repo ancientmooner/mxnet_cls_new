@@ -739,6 +739,9 @@ class NeighborRelationGPUOp : public Operator{
           sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(sim_buffer_tensor, 1) + scalar<DType>(1e-6);
           Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 0, param_.kernel_size * param_.kernel_size));
         }
+        else {
+          Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor + scalar<DType>(0));
+        }
 
         if (ctx.is_train && param_.dropout_ratio > 0) {
           LaunchRNG<CDropoutKernel, xpu>(s, pgen, sim_size,
@@ -909,6 +912,9 @@ class NeighborRelationGPUOp : public Operator{
           sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(sim_buffer_tensor, 1) + scalar<DType>(1e-6);
           Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 0, param_.kernel_size * param_.kernel_size));
         }
+        else {
+          Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor + scalar<DType>(0));
+        }
 
         // backward to value
         AggregationValueBackwardKernel
@@ -967,6 +973,9 @@ class NeighborRelationGPUOp : public Operator{
           Assign(sim_grad_buffer_tensor, kWriteTo,
                  (sim_buffer_tensor - broadcast_with_axis(reduce_with_axis<red::sum, false>(softmax_buffer_tensor * sim_buffer_tensor, 1), 0, param_.kernel_size * param_.kernel_size)) / broadcast_with_axis(sum_softmax_buffer_tensor, 0, param_.kernel_size * param_.kernel_size));
           Assign(sim_grad_buffer_tensor, kWriteTo, F<mshadow_op::relu_grad>(softmax_buffer_tensor) * sim_grad_buffer_tensor);
+        }
+        else {
+          Assign(sim_grad_buffer_tensor, kWriteTo, sim_buffer_tensor + scalar<DType>(0));
         }
         
         // backward to key & query
