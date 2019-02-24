@@ -68,6 +68,7 @@ __global__ void SimilarityComputeForwardKernel(const int n,
                                       const DType* pos_weight,
                                       const int batch_size, 
                                       const int key_channels,
+                                      const int query_channels,
                                       const int height, 
                                       const int width,
                                       const int kernel_height,
@@ -94,7 +95,7 @@ __global__ void SimilarityComputeForwardKernel(const int n,
     const int b = g / num_group;
     g = g % num_group;
 
-    const int key_per_group = key_channels / num_group;
+    const int key_per_group = query_channels / num_group;
     const int half_kh = kernel_height / 2;
     const int half_kw = kernel_width / 2;
     
@@ -105,17 +106,24 @@ __global__ void SimilarityComputeForwardKernel(const int n,
     if (sim_method == 0) {
       query_inds = ((b * num_group + g) * key_per_group * height + h) * width + w;
     }
+    const int key_saliency_group = key_channels - query_channels;
+
     if (w * stride + dilate * (kw - half_kw) >= 0 && w * stride + dilate * (kw - half_kw) < in_width && h * stride + dilate * (kh - half_kh) >= 0 && h * stride + dilate * (kh - half_kh) < in_height) {
-      int key_inds = ((b * num_group + g) * key_per_group * in_height + h * stride + dilate * (kh - half_kh)) * in_width + w * stride + dilate * (kw - half_kw); 
+      int key_inds = ((b * key_channels + g * key_per_group) * in_height + h * stride + dilate * (kh - half_kh)) * in_width + w * stride + dilate * (kw - half_kw);
+      
       for (int i = 0; i < key_per_group; ++i) {
         if (sim_method == 0) {
-          sum_sim += query[query_inds + i * spatial_dim] * key[key_inds + i * in_spatial_dim];
+          sum_sim += query[query_inds + i * spatial_dim] * key[key_inds + i * in_spatial_dim] * scale;
         }
         else {
-          sum_sim += key[key_inds + i * in_spatial_dim];
+          sum_sim += key[key_inds + i * in_spatial_dim] * scale;
+        }
+        if (key_saliency_group > 0) {
+            int key_sal_inds = (b * key_channels + query_channels + int(g * key_saliency_group) / num_group) * in_spatial_dim 
+                        + (h * stride + dilate * (kh - half_kh)) * in_width + w * stride + dilate * (kw - half_kw);
+            sum_sim += key[key_sal_inds];
         }
       }
-      sum_sim *= scale;
     }
     else{
       sum_sim = no_define_value;
@@ -135,6 +143,7 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
                                       const DType* output_grad,
                                       const int batch_size, 
                                       const int key_channels,
+                                      const int query_channels,
                                       const int height, 
                                       const int width,
                                       const int kernel_height,
@@ -164,12 +173,13 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
     const int half_kw = kernel_width / 2;
     
     const int spatial_dim = height * width;
+    const int key_saliency_group = key_channels - query_channels;
 
     //int query_inds = ((b * num_group + g) * key_per_group * height + h) * width + w;
     int output_inds = ((b * num_group + g) * kernel_height * kernel_width * height + h) * width + w; 
     DType sum_query_grad = 0;
 
-    int key_inds = (((b * num_group + g) * key_per_group + kpg) * in_height + h * stride) * in_width + w * stride; 
+    int key_inds = ((b * key_channels + g * key_per_group + kpg) * in_height + h * stride) * in_width + w * stride; 
     if (sim_method == 0) {
       for (int kh = 0; kh < kernel_height; ++kh) {
         for (int kw = 0; kw < kernel_width; ++kw) {
@@ -189,48 +199,68 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
     int end_kh = half_kh / stride;
     int start_kw = -half_kw / stride;
     int end_kw = half_kw / stride;
-    key_inds = (((b * num_group + g) * key_per_group + kpg) * in_height + h * stride) * in_width + w * stride; 
+    //key_inds = ((b * key_channels + g * key_per_group + kpg) * in_height + h * stride) * in_width + w * stride;
+    int key_sal_inds = (b * key_channels + query_channels + int(g * key_saliency_group) / num_group) * in_height * in_width
+                        + h * stride * in_width + w * stride;
+
+    DType sum_key_sal_grad = 0;
     for (int kh = start_kh; kh <= end_kh; ++kh) {
       for (int kw = start_kw; kw <= end_kw; ++kw) {
         if (dilate * kh + h >= 0 && dilate * kh + h < height && dilate * kw + w >= 0 && dilate * kw + w < width) {
           int spatial_offset = dilate * kh * width + dilate * kw;
+          DType c_out_grad = output_grad[output_inds + ((half_kh - kh * stride) * kernel_width + half_kw - kw * stride) * spatial_dim + spatial_offset];
           if (sim_method == 0) {
-            sum_key_grad += output_grad[output_inds + ((half_kh - kh * stride) * kernel_width + half_kw - kw * stride) * spatial_dim + spatial_offset]
-                     * query[index + spatial_offset];
+            sum_key_grad += c_out_grad 
+                     * query[index + spatial_offset] * scale;
           }
           else {
-            sum_key_grad += output_grad[output_inds + ((half_kh - kh * stride) * kernel_width + half_kw - kw * stride) * spatial_dim + spatial_offset];
+            sum_key_grad += c_out_grad * scale;
+          }
+
+          if (key_saliency_group > 0) {
+            sum_key_sal_grad += c_out_grad; 
           }
         }
       }
     }
-    sum_key_grad *= scale;
     key_grad[key_inds] += sum_key_grad;
+    if (key_saliency_group > 0) {
+      atomicAdd(key_grad + key_sal_inds, sum_key_sal_grad);
+    }
 
     if (stride == 2){
       if (h * stride + 1 < in_height) {
         sum_key_grad = 0;
+        sum_key_sal_grad = 0;
         start_kh = (1 - half_kh) / stride;
         end_kh = (half_kh + 1) / stride;
         for (int kh = start_kh; kh <= end_kh; ++kh) {
           for (int kw = start_kw; kw <= end_kw; ++kw) {
             if (dilate * kh + h >= 0 && dilate * kh + h < height && dilate * kw + w >= 0 && dilate * kw + w < width) {
               int spatial_offset = dilate * kh * width + dilate * kw;
+              DType c_out_grad = output_grad[output_inds + ((half_kh - kh * stride + 1) * kernel_width + half_kw - kw * stride) * spatial_dim + spatial_offset];
               if (sim_method == 0) {
-                sum_key_grad += output_grad[output_inds + ((half_kh - kh * stride + 1) * kernel_width + half_kw - kw * stride) * spatial_dim + spatial_offset]
-                         * query[index + spatial_offset];
+                sum_key_grad += c_out_grad
+                        * query[index + spatial_offset] * scale;
               }
               else {
-                sum_key_grad += output_grad[output_inds + ((half_kh - kh * stride + 1) * kernel_width + half_kw - kw * stride) * spatial_dim + spatial_offset];
+                sum_key_grad += c_out_grad * scale;
+              }
+
+              if (key_saliency_group > 0) {
+                sum_key_sal_grad += c_out_grad; 
               }
             }
           }
         }
-        sum_key_grad *= scale;
         key_grad[key_inds + in_width] += sum_key_grad;
+        if (key_saliency_group > 0) {
+          atomicAdd(key_grad + key_sal_inds + in_width, sum_key_sal_grad);
+        }
       }
       if (w * stride + 1 < in_width) {
         sum_key_grad = 0;
+        sum_key_sal_grad = 0;
         start_kh = -half_kh / stride;
         end_kh = half_kh / stride;
         start_kw = (1 - half_kw) / stride;
@@ -239,21 +269,29 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
           for (int kw = start_kw; kw <= end_kw; ++kw) {
             if (dilate * kh + h >= 0 && dilate * kh + h < height && dilate * kw + w >= 0 && dilate * kw + w < width) {
               int spatial_offset = dilate * kh * width + dilate * kw;
+              DType c_out_grad = output_grad[output_inds + ((half_kh - kh * stride) * kernel_width + half_kw - kw * stride + 1) * spatial_dim + spatial_offset];
               if (sim_method == 0) {
-                sum_key_grad += output_grad[output_inds + ((half_kh - kh * stride) * kernel_width + half_kw - kw * stride + 1) * spatial_dim + spatial_offset]
-                         * query[index + spatial_offset];
+                sum_key_grad += c_out_grad 
+                         * query[index + spatial_offset] * scale;
               }
               else {
-                sum_key_grad += output_grad[output_inds + ((half_kh - kh * stride) * kernel_width + half_kw - kw * stride + 1) * spatial_dim + spatial_offset];
+                sum_key_grad += c_out_grad * scale;
+              }
+
+              if (key_saliency_group > 0) {
+                sum_key_sal_grad += c_out_grad; 
               }
             }
           }
         }
-        sum_key_grad *= scale;
         key_grad[key_inds + 1] += sum_key_grad;
+        if (key_saliency_group > 0) {
+          atomicAdd(key_grad + key_sal_inds + 1, sum_key_sal_grad);
+        }
       }
       if (h * stride + 1 < in_height && w * stride + 1 < in_width) {
         sum_key_grad = 0;
+        sum_key_sal_grad = 0;
         start_kh = (1 - half_kh) / stride;
         end_kh = (half_kh + 1) / stride;
         start_kw = (1 - half_kw) / stride;
@@ -262,18 +300,25 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
           for (int kw = start_kw; kw <= end_kw; ++kw) {
             if (dilate * kh + h >= 0 && dilate * kh + h < height && dilate * kw + w >= 0 && dilate * kw + w < width) {
               int spatial_offset = dilate * kh * width + dilate * kw;
+              DType c_out_grad = output_grad[output_inds + ((half_kh - kh * stride + 1) * kernel_width + half_kw - kw * stride + 1) * spatial_dim + spatial_offset];
               if (sim_method == 0) {
-                sum_key_grad += output_grad[output_inds + ((half_kh - kh * stride + 1) * kernel_width + half_kw - kw * stride + 1) * spatial_dim + spatial_offset]
-                         * query[index + spatial_offset];
+                sum_key_grad += c_out_grad 
+                         * query[index + spatial_offset] * scale;
               }
               else {
-                sum_key_grad += output_grad[output_inds + ((half_kh - kh * stride + 1) * kernel_width + half_kw - kw * stride + 1) * spatial_dim + spatial_offset];
+                sum_key_grad += c_out_grad * scale; 
+              }
+
+              if (key_saliency_group > 0) {
+                sum_key_sal_grad += c_out_grad; 
               }
             }
           }
         }
-        sum_key_grad *= scale;
         key_grad[key_inds + in_width + 1] += sum_key_grad;
+        if (key_saliency_group > 0) {
+          atomicAdd(key_grad + key_sal_inds + in_width + 1, sum_key_sal_grad);
+        }
       }
     }
   }
@@ -657,6 +702,7 @@ class NeighborRelationGPUOp : public Operator{
       output = 0;
 
     int key_channels = key.shape_[1];
+    int query_channels = query.shape_[1];
     int height   = query.shape_[2];
     int width    = query.shape_[3];
     int batch_size  = key.shape_[0];
@@ -668,7 +714,7 @@ class NeighborRelationGPUOp : public Operator{
     int sim_size = batch_step_ * param_.num_group * param_.kernel_size * param_.kernel_size * height * width;
 
     int key_step = batch_step_ * key_channels * in_height * in_width;
-    int query_step = batch_step_ * key_channels * height * width;
+    int query_step = batch_step_ * query_channels * height * width;
     int value_step = batch_step_ * value_channels * in_height * in_width;
     int output_step = batch_step_ * value_channels * height * width;
 
@@ -715,6 +761,7 @@ class NeighborRelationGPUOp : public Operator{
                                       pos_weight.dptr_,
                                       cur_batch_step, 
                                       key_channels,
+                                      query_channels,
                                       height, 
                                       width,
                                       param_.kernel_size,
@@ -820,6 +867,7 @@ class NeighborRelationGPUOp : public Operator{
     }
 
     int key_channels = key.shape_[1];
+    int query_channels = query.shape_[1];
     int height   = query.shape_[2];
     int width    = query.shape_[3];
     int batch_size  = key.shape_[0];
@@ -827,13 +875,13 @@ class NeighborRelationGPUOp : public Operator{
     int in_height   = key.shape_[2];
     int in_width    = key.shape_[3];
 
-    int key_per_group = key_channels / param_.num_group;
+    int key_per_group = query_channels / param_.num_group;
     
     batch_step_ = std::min(param_.batch_step, batch_size);
     int sim_size = batch_step_ * param_.num_group * param_.kernel_size * param_.kernel_size * height * width;
 
     int key_step = batch_step_ * key_channels * in_height * in_width;
-    int query_step = batch_step_ * key_channels * height * width;
+    int query_step = batch_step_ * query_channels * height * width;
     int value_step = batch_step_ * value_channels * in_height * in_width;
     int output_step = batch_step_ * value_channels * height * width;
 
@@ -888,6 +936,7 @@ class NeighborRelationGPUOp : public Operator{
                                       pos_weight.dptr_,
                                       cur_batch_step, 
                                       key_channels,
+                                      query_channels,
                                       height, 
                                       width,
                                       param_.kernel_size,
@@ -987,6 +1036,7 @@ class NeighborRelationGPUOp : public Operator{
                                       sim_grad_buffer_tensor.dptr_,
                                       batch_step_, 
                                       key_channels,
+                                      query_channels,
                                       height, 
                                       width,
                                       param_.kernel_size,

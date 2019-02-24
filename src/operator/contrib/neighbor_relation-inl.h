@@ -46,6 +46,7 @@ struct NeighborRelationParam : public dmlc::Parameter<NeighborRelationParam> {
   int norm_method;
   int sim_method;
   float dropout_ratio;
+  int key_saliency_group;
   DMLC_DECLARE_PARAMETER(NeighborRelationParam) {
     DMLC_DECLARE_FIELD(num_group).set_default(32)
       .describe("Number of relation groups.");
@@ -69,6 +70,8 @@ struct NeighborRelationParam : public dmlc::Parameter<NeighborRelationParam> {
       .describe("0: dot; 1: add");
     DMLC_DECLARE_FIELD(dropout_ratio).set_default(0.0)
       .describe("dropout ratio");
+    DMLC_DECLARE_FIELD(key_saliency_group).set_default(0)
+      .describe("group of key saliency");
   }
 };
 
@@ -110,7 +113,7 @@ class NeighborRelationProp : public OperatorProperty {
     //CHECK_EQ(vshape[2], qshape[2]) << "value and query should have the same height";
     //CHECK_EQ(vshape[3], qshape[3]) << "value and query should have the same width";
     
-    CHECK_EQ(kshape[1], qshape[1]) << "key and query should have the same channel dim";
+    CHECK_EQ(kshape[1], qshape[1] + param_.key_saliency_group) << "key and query should have the same channel dim";
     
     const TShape &pshape = in_shape->at(neighborRelation::kPos);
     //CHECK_EQ(pshape[0], param_.num_group) << "pos_weight must be of shape [num_group, kernel_y, kenel_x]";
