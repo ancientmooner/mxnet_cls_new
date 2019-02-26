@@ -103,7 +103,7 @@ __global__ void SimilarityComputeForwardKernel(const int n,
     const int in_spatial_dim = in_height * in_width;
     DType sum_sim = 0;
     int query_inds = 0;
-    if (sim_method == 0) {
+    if (sim_method != 1) {
       query_inds = ((b * num_group + g) * key_per_group * height + h) * width + w;
     }
     const int key_saliency_group = key_channels - query_channels;
@@ -115,8 +115,26 @@ __global__ void SimilarityComputeForwardKernel(const int n,
         if (sim_method == 0) {
           sum_sim += query[query_inds + i * spatial_dim] * key[key_inds + i * in_spatial_dim] * scale;
         }
-        else {
+        else if (sim_method == 1) {
           sum_sim += key[key_inds + i * in_spatial_dim] * scale;
+        }
+        else if (sim_method == 2) {
+          sum_sim += -abs(query[query_inds + i * spatial_dim] - key[key_inds + i * in_spatial_dim]) * scale;
+        }
+        else if (sim_method == 3) {
+          DType query_val = query[query_inds + i * spatial_dim];
+          DType key_val = key[key_inds + i * in_spatial_dim];
+          sum_sim += -abs(query_val - key_val) / (abs(query_val) + abs(key_val) + DType(1.0)) * scale;
+        }
+        else if (sim_method == 4) {
+          DType query_val = query[query_inds + i * spatial_dim];
+          DType key_val = key[key_inds + i * in_spatial_dim];
+          sum_sim += -(query_val - key_val) * (query_val - key_val) / (abs(query_val * key_val) + DType(1.0)) * scale;
+        }
+        else if (sim_method == 5) {
+          DType query_val = query[query_inds + i * spatial_dim];
+          DType key_val = key[key_inds + i * in_spatial_dim];
+          sum_sim += -(query_val - key_val) * (query_val - key_val) * scale;
         }
         if (key_saliency_group > 0) {
             int key_sal_inds = (b * key_channels + query_channels + int(g * key_saliency_group) / num_group) * in_spatial_dim 
@@ -126,7 +144,35 @@ __global__ void SimilarityComputeForwardKernel(const int n,
       }
     }
     else{
-      sum_sim = no_define_value;
+      //sum_sim = no_define_value;
+       /** for debug purpose ***/
+       /*
+      for (int i = 0; i < key_per_group; ++i) {
+        if (sim_method == 0) {
+          sum_sim += 0;
+        }
+        else if (sim_method == 1) {
+          sum_sim += 0;
+        }
+        else if (sim_method == 2) {
+          sum_sim += -abs(query[query_inds + i * spatial_dim]) * scale;
+        }
+        else if (sim_method == 3) {
+          DType query_val = query[query_inds + i * spatial_dim];
+          DType key_val = 0;
+          sum_sim += -abs(query_val - key_val) / (abs(query_val) + abs(key_val) + DType(1.0)) * scale;
+        }
+        else if (sim_method == 4) {
+          DType query_val = query[query_inds + i * spatial_dim];
+          DType key_val = 0;
+          sum_sim += -(query_val - key_val) * (query_val - key_val) / (abs(query_val * key_val) + DType(1.0)) * scale;
+        }
+        else if (sim_method == 5) {
+          DType query_val = query[query_inds + i * spatial_dim];
+          sum_sim += -query_val * query_val * scale;
+        }
+      }
+      */
     }
 
     int pos_inds = (g * kernel_height + kh) * kernel_width + kw;
@@ -180,19 +226,117 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
     DType sum_query_grad = 0;
 
     int key_inds = ((b * key_channels + g * key_per_group + kpg) * in_height + h * stride) * in_width + w * stride; 
-    if (sim_method == 0) {
       for (int kh = 0; kh < kernel_height; ++kh) {
         for (int kw = 0; kw < kernel_width; ++kw) {
           if (w * stride + dilate * (kw - half_kw) >= 0 && w * stride + dilate * (kw - half_kw) < in_width 
             && h * stride + dilate * (kh - half_kh) >= 0 && h * stride + dilate * (kh - half_kh) < in_height) {
           //if (kw + w - half_kw >= 0 && kw + w - half_kw < width && kh + h - half_kh >= 0 && kh + h - half_kh < height) {
-            sum_query_grad += output_grad[output_inds + (kh * kernel_width + kw) * spatial_dim] * key[key_inds + dilate * (kh - half_kh) * in_width + dilate * (kw - half_kw)];
+            DType c_out_grad = output_grad[output_inds + (kh * kernel_width + kw) * spatial_dim];
+            if (sim_method == 0) {
+              sum_query_grad += c_out_grad 
+                    * key[key_inds + dilate * (kh - half_kh) * in_width + dilate * (kw - half_kw)];
+            }
+            else if (sim_method == 2) {
+              DType key_val = key[key_inds + dilate * (kh - half_kh) * in_width + dilate * (kw - half_kw)];
+              DType query_val = query[index];
+              if (key_val > query_val) {
+                sum_query_grad += c_out_grad;
+              }
+              else if (key_val < query_val) {
+                sum_query_grad += -c_out_grad;
+              }
+            }
+            else if (sim_method == 3) {
+              DType key_val = key[key_inds + dilate * (kh - half_kh) * in_width + dilate * (kw - half_kw)];
+              DType query_val = query[index];
+              if (key_val > query_val) {
+                sum_query_grad += c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0)); 
+              }
+              else if (key_val < query_val) {
+                sum_query_grad += -c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0)); 
+              }
+
+              if (query_val > 0) {
+                sum_query_grad += c_out_grad * abs(key_val - query_val) / ((abs(key_val) +abs(query_val) + DType(1.0)) * (abs(key_val) +abs(query_val) + DType(1.0))); 
+              }
+              else if (query_val < 0) {
+                sum_query_grad += -c_out_grad * abs(key_val - query_val) / ((abs(key_val) +abs(query_val) + DType(1.0)) * (abs(key_val) +abs(query_val) + DType(1.0))); 
+              }
+            }
+            else if (sim_method == 4) {
+              DType key_val = key[key_inds + dilate * (kh - half_kh) * in_width + dilate * (kw - half_kw)];
+              DType query_val = query[index];
+              sum_query_grad += 2 * c_out_grad * (key_val - query_val) / (abs(key_val * query_val) + DType(1.0));
+              
+              if (key_val * query_val > 0) {
+                sum_query_grad += c_out_grad * key_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
+              }
+              else if(key_val * query_val < 0) {
+                sum_query_grad += -c_out_grad * key_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
+              }
+            }
+            else if (sim_method == 5) {
+              DType key_val = key[key_inds + dilate * (kh - half_kh) * in_width + dilate * (kw - half_kw)];
+              DType query_val = query[index];
+              sum_query_grad += 2 * c_out_grad * (key_val - query_val);
+            }
+          }
+          else {
+
+       /** for debug purpose ***/
+            /*
+            DType c_out_grad = output_grad[output_inds + (kh * kernel_width + kw) * spatial_dim];
+            if (sim_method == 2) {
+              DType key_val = 0;
+              DType query_val = query[index];
+              if (key_val > query_val) {
+                sum_query_grad += c_out_grad;
+              }
+              else if (key_val < query_val) {
+                sum_query_grad += -c_out_grad;
+              }
+            }
+            else if (sim_method == 3) {
+              DType key_val = 0;
+              DType query_val = query[index];
+              if (key_val > query_val) {
+                sum_query_grad += c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0)); 
+              }
+              else if (key_val < query_val) {
+                sum_query_grad += -c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0)); 
+              }
+
+              if (query_val > 0) {
+                sum_query_grad += c_out_grad * abs(key_val - query_val) / ((abs(key_val) +abs(query_val) + DType(1.0)) * (abs(key_val) +abs(query_val) + DType(1.0))); 
+              }
+              else if (query_val < 0) {
+                sum_query_grad += -c_out_grad * abs(key_val - query_val) / ((abs(key_val) +abs(query_val) + DType(1.0)) * (abs(key_val) +abs(query_val) + DType(1.0))); 
+              }
+            }
+            else if (sim_method == 4) {
+              DType key_val = 0;
+              DType query_val = query[index];
+              sum_query_grad += 2 * c_out_grad * (key_val - query_val) / (abs(key_val * query_val) + DType(1.0));
+              
+              if (key_val * query_val > 0) {
+                sum_query_grad += c_out_grad * key_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
+              }
+              else if(key_val * query_val < 0) {
+                sum_query_grad += -c_out_grad * key_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
+              }
+            }
+            else if (sim_method == 5) {
+              DType key_val = 0;
+              DType query_val = query[index];
+              sum_query_grad += 2 * c_out_grad * (key_val - query_val);
+            }
+            */
+
           }
         }
       }
       sum_query_grad *= scale;
       query_grad[index] += sum_query_grad;
-    }
 
     DType sum_key_grad = 0;
     int start_kh = -half_kh / stride;
@@ -209,12 +353,57 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
         if (dilate * kh + h >= 0 && dilate * kh + h < height && dilate * kw + w >= 0 && dilate * kw + w < width) {
           int spatial_offset = dilate * kh * width + dilate * kw;
           DType c_out_grad = output_grad[output_inds + ((half_kh - kh * stride) * kernel_width + half_kw - kw * stride) * spatial_dim + spatial_offset];
+          DType query_val = query[index + spatial_offset];
           if (sim_method == 0) {
             sum_key_grad += c_out_grad 
-                     * query[index + spatial_offset] * scale;
+                     * query_val * DType(scale);
           }
-          else {
-            sum_key_grad += c_out_grad * scale;
+          else if (sim_method == 1) {
+            sum_key_grad += c_out_grad * DType(scale);
+          }
+          else if (sim_method == 2) {
+            DType key_val = key[key_inds];
+            if (key_val > query_val) {
+              sum_key_grad += DType(-scale) * c_out_grad;
+            }
+            else if (key_val < query_val) {
+              sum_key_grad += DType(scale) * c_out_grad;
+            }
+          }
+          else if (sim_method == 3) {
+            DType key_val = key[key_inds];
+            if (key_val > query_val) {
+              sum_key_grad += -DType(scale) * c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0));
+            }
+            else if (key_val < query_val) {
+              sum_key_grad += DType(scale) * c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0));
+            }
+
+            if (key_val > 0) {
+              sum_key_grad += c_out_grad * DType(scale) * abs(key_val - query_val) 
+                            / ((abs(key_val) +abs(query_val) + DType(1.0)) 
+                            * (abs(key_val) +abs(query_val) + DType(1.0))); 
+            }
+            else if (key_val < 0){
+              sum_key_grad += -c_out_grad * DType(scale) * abs(key_val - query_val) 
+                            / ((abs(key_val) +abs(query_val) + DType(1.0)) 
+                            * (abs(key_val) +abs(query_val) + DType(1.0))); 
+            }
+          }
+          else if (sim_method == 4) {
+            DType key_val = key[key_inds];
+            sum_key_grad += 2 * DType(scale) * c_out_grad * (query_val - key_val) / (abs(key_val * query_val) + DType(1.0));
+              
+            if (key_val * query_val > 0) {
+              sum_key_grad += DType(scale) * c_out_grad * query_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
+            }
+            else if(key_val * query_val < 0) {
+              sum_key_grad += -DType(scale) * c_out_grad * query_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
+            }
+          }
+          else if (sim_method == 5) {
+            DType key_val = key[key_inds];
+            sum_key_grad += DType(scale) * c_out_grad * (query_val - key_val) * 2; 
           }
 
           if (key_saliency_group > 0) {
@@ -239,12 +428,60 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
             if (dilate * kh + h >= 0 && dilate * kh + h < height && dilate * kw + w >= 0 && dilate * kw + w < width) {
               int spatial_offset = dilate * kh * width + dilate * kw;
               DType c_out_grad = output_grad[output_inds + ((half_kh - kh * stride + 1) * kernel_width + half_kw - kw * stride) * spatial_dim + spatial_offset];
+              DType query_val = query[index + spatial_offset];
               if (sim_method == 0) {
-                sum_key_grad += c_out_grad
-                        * query[index + spatial_offset] * scale;
+                sum_key_grad += c_out_grad 
+                         * query_val * DType(scale);
               }
-              else {
-                sum_key_grad += c_out_grad * scale;
+              else if (sim_method == 1) {
+                sum_key_grad += c_out_grad * DType(scale);
+              }
+              else if (sim_method == 2) {
+                DType key_val = key[key_inds + in_width];
+                if (key_val > query_val) {
+                  sum_key_grad += DType(-scale) * c_out_grad;
+                }
+                else if (key_val < query_val) {
+                  sum_key_grad += DType(scale) * c_out_grad;
+                }
+                else {
+                  sum_key_grad += DType(0.0);
+                }
+              }
+              else if (sim_method == 3) {
+                DType key_val = key[key_inds + in_width];
+                if (key_val > query_val) {
+                  sum_key_grad += -DType(scale) * c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0));
+                }
+                else if (key_val < query_val) {
+                  sum_key_grad += DType(scale) * c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0));
+                }
+    
+                if (key_val > 0) {
+                  sum_key_grad += DType(scale) * c_out_grad * abs(key_val - query_val) 
+                                / ((abs(key_val) +abs(query_val) + DType(1.0)) 
+                                * (abs(key_val) +abs(query_val) + DType(1.0))); 
+                }
+                else if (key_val < 0){
+                  sum_key_grad += -DType(scale) * c_out_grad * abs(key_val - query_val) 
+                                / ((abs(key_val) +abs(query_val) + DType(1.0)) 
+                                * (abs(key_val) +abs(query_val) + DType(1.0))); 
+                }
+              }
+              else if (sim_method == 4) {
+                DType key_val = key[key_inds + in_width];
+                sum_key_grad += 2 * DType(scale) * c_out_grad * (query_val - key_val) / (abs(key_val * query_val) + DType(1.0));
+              
+                if (key_val * query_val > 0) {
+                  sum_key_grad += DType(scale) * c_out_grad * query_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
+                }
+                else if(key_val * query_val < 0) {
+                  sum_key_grad += -DType(scale) * c_out_grad * query_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
+                }
+              }
+              else if (sim_method == 5) {
+                DType key_val = key[key_inds + in_width];
+                sum_key_grad += DType(scale) * c_out_grad * (query_val - key_val) * 2; 
               }
 
               if (key_saliency_group > 0) {
@@ -270,12 +507,60 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
             if (dilate * kh + h >= 0 && dilate * kh + h < height && dilate * kw + w >= 0 && dilate * kw + w < width) {
               int spatial_offset = dilate * kh * width + dilate * kw;
               DType c_out_grad = output_grad[output_inds + ((half_kh - kh * stride) * kernel_width + half_kw - kw * stride + 1) * spatial_dim + spatial_offset];
+              DType query_val = query[index + spatial_offset];
               if (sim_method == 0) {
                 sum_key_grad += c_out_grad 
-                         * query[index + spatial_offset] * scale;
+                         * query_val * DType(scale);
               }
-              else {
-                sum_key_grad += c_out_grad * scale;
+              else if (sim_method == 1) {
+                sum_key_grad += c_out_grad * DType(scale);
+              }
+              else if (sim_method == 2) {
+                DType key_val = key[key_inds + 1];
+                if (key_val > query_val) {
+                  sum_key_grad += DType(-scale) * c_out_grad;
+                }
+                else if (key_val < query_val) {
+                  sum_key_grad += DType(scale) * c_out_grad;
+                }
+                else {
+                  sum_key_grad += DType(0.0);
+                }
+              }
+              else if (sim_method == 3) {
+                DType key_val = key[key_inds + 1];
+                if (key_val > query_val) {
+                  sum_key_grad += -DType(scale) * c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0));
+                }
+                else if (key_val < query_val) {
+                  sum_key_grad += DType(scale) * c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0));
+                }
+    
+                if (key_val > 0) {
+                  sum_key_grad += DType(scale) * c_out_grad * abs(key_val - query_val) 
+                                / ((abs(key_val) +abs(query_val) + DType(1.0)) 
+                                * (abs(key_val) +abs(query_val) + DType(1.0))); 
+                }
+                else if (key_val < 0){
+                  sum_key_grad += -DType(scale) * c_out_grad * abs(key_val - query_val) 
+                                / ((abs(key_val) +abs(query_val) + DType(1.0)) 
+                                * (abs(key_val) +abs(query_val) + DType(1.0))); 
+                }
+              }
+              else if (sim_method == 4) {
+                DType key_val = key[key_inds + 1];
+                sum_key_grad += 2 * DType(scale) * c_out_grad * (query_val - key_val) / (abs(key_val * query_val) + DType(1.0));
+              
+                if (key_val * query_val > 0) {
+                  sum_key_grad += DType(scale) * c_out_grad * query_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
+                }
+                else if(key_val * query_val < 0) {
+                  sum_key_grad += -DType(scale) * c_out_grad * query_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
+                }
+              }
+              else if (sim_method == 5) {
+                DType key_val = key[key_inds + 1];
+                sum_key_grad += DType(scale) * c_out_grad * (query_val - key_val) * 2; 
               }
 
               if (key_saliency_group > 0) {
@@ -301,13 +586,59 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
             if (dilate * kh + h >= 0 && dilate * kh + h < height && dilate * kw + w >= 0 && dilate * kw + w < width) {
               int spatial_offset = dilate * kh * width + dilate * kw;
               DType c_out_grad = output_grad[output_inds + ((half_kh - kh * stride + 1) * kernel_width + half_kw - kw * stride + 1) * spatial_dim + spatial_offset];
+              DType query_val = query[index + spatial_offset];
               if (sim_method == 0) {
                 sum_key_grad += c_out_grad 
-                         * query[index + spatial_offset] * scale;
+                         * query_val * DType(scale);
               }
-              else {
-                sum_key_grad += c_out_grad * scale; 
+              else if (sim_method == 1) {
+                sum_key_grad += c_out_grad * DType(scale);
               }
+              else if (sim_method == 2) {
+                DType key_val = key[key_inds + in_width + 1];
+                if (key_val > query_val) {
+                  sum_key_grad += DType(-scale) * c_out_grad;
+                }
+                else if (key_val < query_val) {
+                  sum_key_grad += DType(scale) * c_out_grad;
+                }
+              }
+              else if (sim_method == 3) {
+                DType key_val = key[key_inds + in_width + 1];
+                if (key_val > query_val) {
+                  sum_key_grad += -DType(scale) * c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0));
+                }
+                else if (key_val < query_val) {
+                  sum_key_grad += DType(scale) * c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0));
+                }
+    
+                if (key_val > 0) {
+                  sum_key_grad += DType(scale) * c_out_grad * abs(key_val - query_val) 
+                                / ((abs(key_val) +abs(query_val) + DType(1.0)) 
+                                * (abs(key_val) +abs(query_val) + DType(1.0))); 
+                }
+                else if (key_val < 0){
+                  sum_key_grad += -DType(scale) * c_out_grad * abs(key_val - query_val) 
+                                / ((abs(key_val) +abs(query_val) + DType(1.0)) 
+                                * (abs(key_val) +abs(query_val) + DType(1.0))); 
+                }
+              }
+              else if (sim_method == 4) {
+                DType key_val = key[key_inds + in_width + 1];
+                sum_key_grad += 2 * DType(scale) * c_out_grad * (query_val - key_val) / (abs(key_val * query_val) + DType(1.0));
+              
+                if (key_val * query_val > 0) {
+                  sum_key_grad += DType(scale) * c_out_grad * query_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
+                }
+                else if(key_val * query_val < 0) {
+                  sum_key_grad += -DType(scale) * c_out_grad * query_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
+                }
+              }
+              else if (sim_method == 5) {
+                DType key_val = key[key_inds + in_width + 1];
+                sum_key_grad += DType(scale) * c_out_grad * (query_val - key_val) * 2; 
+              }
+
 
               if (key_saliency_group > 0) {
                 sum_key_sal_grad += c_out_grad; 
