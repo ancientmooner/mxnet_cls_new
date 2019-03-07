@@ -45,6 +45,7 @@ struct NeighborRelationFullParam : public dmlc::Parameter<NeighborRelationFullPa
   int norm_method;
   int sim_method;
   int key_saliency_group;
+  int use_batch_dot;
   DMLC_DECLARE_PARAMETER(NeighborRelationFullParam) {
     DMLC_DECLARE_FIELD(num_group).set_default(32)
       .describe("Number of relation groups.");
@@ -66,6 +67,8 @@ struct NeighborRelationFullParam : public dmlc::Parameter<NeighborRelationFullPa
       .describe("0: dot; 1: add");
     DMLC_DECLARE_FIELD(key_saliency_group).set_default(0)
       .describe("group of key saliency");
+    DMLC_DECLARE_FIELD(use_batch_dot).set_default(0)
+      .describe("whether use batch dot to compute similarity");
   }
 };
 

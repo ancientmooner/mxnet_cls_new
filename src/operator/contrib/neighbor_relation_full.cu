@@ -62,6 +62,39 @@ output_value = mx.sym.reshape(mx.sym.sum(mx.sym.broadcast_mul(app_geo_sim, warp_
 // output: [batch_size, num_group * in_height * in_width, height, width]
 
 template <typename DType>
+__global__ void SimilarityAddGeometryForwardKernel(const int n,
+                                      const DType* pos_weight,
+                                      const int batch_size, 
+                                      const int height, 
+                                      const int width,
+                                      const int num_group,
+                                      const int key_stride,
+                                      const int in_height,
+                                      const int in_width,
+                                      const int geo_height,
+                                      const int geo_width,
+                                      DType* output) {
+  // n = batch_size * num_group * in_height * in_width * height * width
+  CUDA_KERNEL_LOOP(index, n) { 
+    const int w = index % width;
+    int h = index / width;
+    int kw = h / height;
+    h = h % height;
+    int kh = kw / in_width;
+    kw = kw % in_width;
+    int g = kh / in_height;
+    kh = kh % in_height;
+    const int b = g / num_group;
+    g = g % num_group;
+    
+    int pos_inds = g * geo_height * geo_width + (kh * key_stride - h + height - 1) * geo_width + kw * key_stride - w + width - 1;
+    DType geo_sim = pos_weight[pos_inds];
+
+    output[index] += geo_sim;
+  }
+}
+
+template <typename DType>
 __global__ void SimilarityComputeForwardKernel(const int n,
                                       const DType* key, 
                                       const DType* query, 
@@ -123,8 +156,8 @@ __global__ void SimilarityComputeForwardKernel(const int n,
       }
     }
 
-    // pos_weight: [(key_stride-1)/2.0-height+1, floor(height/key_stride)*key_stride-1-(key_stride-1)/2.0]  
-    // * [(key_stride-1)/2.0-width+1, floor(width/key_stride)*key_stride-1-(key_stride-1)/2.0] *
+    // pos_weight: [(key_stride-1)/2.0-height+1, floor((height-1)/key_stride)*key_stride+(key_stride-1)/2.0]  
+    // pos_weight: [(key_stride-1)/2.0-width+1, floor((width-1)/key_stride)*key_stride+(key_stride-1)/2.0]  
 
     //if ((sim_method / 2) % 2 == 1){
     int pos_inds = g * geo_height * geo_width + (kh * key_stride - h + height - 1) * geo_width + kw * key_stride - w + width - 1;
@@ -261,9 +294,9 @@ __global__ void SimilarityComputeQueryBackwardKernel(const int n,
 }
 
 
+// pos_weight: [(key_stride-1)/2.0-height+1, floor((height-1)/key_stride)*key_stride+(key_stride-1)/2.0]  
+// pos_weight: [(key_stride-1)/2.0-width+1, floor((width-1)/key_stride)*key_stride+(key_stride-1)/2.0]  
 
-// pos_weight_grad: [(key_stride-1)/2.0-height+1, floor(height/key_stride)*key_stride-1-(key_stride-1)/2.0]  
-// * [(key_stride-1)/2.0-width+1, floor(width/key_stride)*key_stride-1-(key_stride-1)/2.0]
 // [num_group, geo_height, geo_width]
 template <typename DType>
 __global__ void SimilarityComputePositionWeightBackwardKernel(const int n,
@@ -626,6 +659,16 @@ class NeighborRelationFullGPUOp : public Operator{
 
     TBlob sum_softmax_buffer(workspace.dptr_ + sim_size * 2, sum_softmax_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
     Tensor<xpu, 2, DType> sum_softmax_buffer_tensor = sum_softmax_buffer.get<xpu, 2, DType>(s);
+    
+    TShape key_buffer_shape(3);
+    key_buffer_shape[0] = batch_step_ * param_.num_group;
+    key_buffer_shape[1] = in_height * in_width;
+    key_buffer_shape[2] = 1;
+    
+    TShape query_buffer_shape(3);
+    query_buffer_shape[0] = batch_step_ * param_.num_group;
+    query_buffer_shape[1] = 1;
+    query_buffer_shape[2] = height * width;
 
     //TShape workspace_batchdot_shape(1);
     //workspace_batchdot_shape[0] = workspace_batchdot_size;
@@ -642,9 +685,37 @@ class NeighborRelationFullGPUOp : public Operator{
             cur_batch_step = batch_size - (M - 1) * batch_step_;
             CHECK_EQ(cur_batch_step, batch_step_) << "batch_step must be divided by batch_size";
         }
-        
-        SimilarityComputeForwardKernel<DType>
-            <<<cuda_get_num_blocks(sim_size), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
+
+        TBlob key_buffer(key.dptr_ + key_step * i, key_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+        Tensor<xpu, 3, DType> key_buffer_tensor = key_buffer.get<xpu, 3, DType>(s);
+
+        TBlob query_buffer(query.dptr_ + query_step * i, query_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+        Tensor<xpu, 3, DType> query_buffer_tensor = query_buffer.get<xpu, 3, DType>(s);
+
+        if (param_.use_batch_dot) {
+            BatchGEMM<false, false>(sim_buffer_tensor, key_buffer_tensor, query_buffer_tensor, (DType)1.0f,
+                                        (DType)0.0f,
+                                        workspace_batchdot);
+            
+            SimilarityAddGeometryForwardKernel<DType>
+                <<<cuda_get_num_blocks(sim_size), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
+                                      sim_size, 
+                                      pos_weight.dptr_,
+                                      cur_batch_step, 
+                                      height, 
+                                      width,
+                                      param_.num_group,
+                                      param_.key_stride,
+                                      in_height,
+                                      in_width,
+                                      geo_height,
+                                      geo_width,
+                                      sim_buffer_tensor.dptr_);
+            MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityAddGeometryForwardKernel);
+        }
+        else {
+            SimilarityComputeForwardKernel<DType>
+                <<<cuda_get_num_blocks(sim_size), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
                                       sim_size, 
                                       key.dptr_ + key_step * i, 
                                       query.dptr_ + query_step * i, 
@@ -664,8 +735,8 @@ class NeighborRelationFullGPUOp : public Operator{
                                       geo_width,
                                       param_.sim_method,
                                       sim_buffer_tensor.dptr_);
-        MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeForwardKernel);
-
+            MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeForwardKernel);
+        }
         // softmax forward
         if (param_.norm_method == 0) {
           Softmax(softmax_buffer_tensor, sim_buffer_tensor);
@@ -799,6 +870,16 @@ class NeighborRelationFullGPUOp : public Operator{
     
     TBlob sum_softmax_buffer(workspace.dptr_ + sim_size * 3, sum_softmax_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
     Tensor<xpu, 2, DType> sum_softmax_buffer_tensor = sum_softmax_buffer.get<xpu, 2, DType>(s);
+    
+    TShape key_buffer_shape(3);
+    key_buffer_shape[0] = batch_step_ * param_.num_group;
+    key_buffer_shape[1] = in_height * in_width;
+    key_buffer_shape[2] = 1;
+    
+    TShape query_buffer_shape(3);
+    query_buffer_shape[0] = batch_step_ * param_.num_group;
+    query_buffer_shape[1] = 1;
+    query_buffer_shape[2] = height * width;
 
     //TBlob workspace_batchdot_buffer1(workspace.dptr_ + sim_size * 3 + workspace_sum_size, 
     //                Shape1(workspace_batchdot_size), xpu::kDevMask, DataType<DType*>::kFlag);
@@ -817,9 +898,37 @@ class NeighborRelationFullGPUOp : public Operator{
             cur_batch_step = batch_size - (M - 1) * batch_step_;
             CHECK_EQ(cur_batch_step, batch_step_) << "batch_step must be divided by batch_size";
         }
-        
-        SimilarityComputeForwardKernel<DType>
-            <<<cuda_get_num_blocks(sim_size), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
+
+        TBlob key_buffer(key.dptr_ + key_step * i, key_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+        Tensor<xpu, 3, DType> key_buffer_tensor = key_buffer.get<xpu, 3, DType>(s);
+
+        TBlob query_buffer(query.dptr_ + query_step * i, query_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+        Tensor<xpu, 3, DType> query_buffer_tensor = query_buffer.get<xpu, 3, DType>(s);
+
+        if (param_.use_batch_dot) {
+            BatchGEMM<false, false>(sim_buffer_tensor, key_buffer_tensor, query_buffer_tensor, (DType)1.0f,
+                                        (DType)0.0f,
+                                        workspace_batchdot1);
+            
+            SimilarityAddGeometryForwardKernel<DType>
+                <<<cuda_get_num_blocks(sim_size), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
+                                      sim_size, 
+                                      pos_weight.dptr_,
+                                      cur_batch_step, 
+                                      height, 
+                                      width,
+                                      param_.num_group,
+                                      param_.key_stride,
+                                      in_height,
+                                      in_width,
+                                      geo_height,
+                                      geo_width,
+                                      sim_buffer_tensor.dptr_);
+            MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityAddGeometryForwardKernel);
+        }
+        else {
+            SimilarityComputeForwardKernel<DType>
+                <<<cuda_get_num_blocks(sim_size), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
                                       sim_size, 
                                       key.dptr_ + key_step * i, 
                                       query.dptr_ + query_step * i, 
@@ -839,7 +948,8 @@ class NeighborRelationFullGPUOp : public Operator{
                                       geo_width,
                                       param_.sim_method,
                                       sim_buffer_tensor.dptr_);
-        MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeForwardKernel);
+            MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeForwardKernel);
+        }
 
         // softmax forward
         if (param_.norm_method == 0) {
@@ -891,8 +1001,25 @@ class NeighborRelationFullGPUOp : public Operator{
         }
         
         // backward to key & query
-        SimilarityComputeKeyBackwardKernel<DType>
-            <<<cuda_get_num_blocks(key_step_nosal), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
+
+        TBlob key_grad_buffer(key_grad.dptr_ + key_step * i, key_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+        Tensor<xpu, 3, DType> key_grad_buffer_tensor = key_grad_buffer.get<xpu, 3, DType>(s);
+
+        TBlob query_grad_buffer(query_grad.dptr_ + query_step * i, query_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+        Tensor<xpu, 3, DType> query_grad_buffer_tensor = query_grad_buffer.get<xpu, 3, DType>(s);
+
+        if (param_.use_batch_dot) {
+            //query
+            BatchGEMM<true, false>(query_grad_buffer_tensor, key_buffer_tensor, sim_grad_buffer_tensor, (DType)1.0f,
+                                        (kAddTo == req[neighborRelationFull::kQuery]) ? (DType)1.0f : (DType)0.0f,
+                                        workspace_batchdot1);
+            BatchGEMM<false, true>(key_grad_buffer_tensor, sim_grad_buffer_tensor, query_buffer_tensor, (DType)1.0f,
+                                        (kAddTo == req[neighborRelationFull::kKey]) ? (DType)1.0f : (DType)0.0f,
+                                        workspace_batchdot2);
+        }
+        else {
+            SimilarityComputeKeyBackwardKernel<DType>
+                <<<cuda_get_num_blocks(key_step_nosal), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
                                       key_step_nosal,
                                       key.dptr_ + i * key_step, 
                                       query.dptr_ + i * query_step,
@@ -913,11 +1040,11 @@ class NeighborRelationFullGPUOp : public Operator{
                                       geo_width,
                                       param_.sim_method,
                                       key_grad.dptr_ + i * key_step);
-        MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeKeyBackwardKernel);
-        if (param_.sim_method == 0) {
-          // backward to query
-          SimilarityComputeQueryBackwardKernel<DType>
-              <<<cuda_get_num_blocks(query_step), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
+            MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeKeyBackwardKernel);
+            if (param_.sim_method == 0) {
+                // backward to query
+                SimilarityComputeQueryBackwardKernel<DType>
+                    <<<cuda_get_num_blocks(query_step), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
                                       query_step,
                                       key.dptr_ + i * key_step, 
                                       query.dptr_ + i * query_step,
@@ -938,9 +1065,9 @@ class NeighborRelationFullGPUOp : public Operator{
                                       geo_width,
                                       param_.sim_method,
                                       query_grad.dptr_ + i * query_step);
-          MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeQueryBackwardKernel);
-        }
-
+                MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeQueryBackwardKernel);
+            }
+          }
         //if ((param_.sim_method / 2) % 2 == 1) {
           // backward to key & query
           int geo_step = param_.num_group * geo_height * geo_width;
