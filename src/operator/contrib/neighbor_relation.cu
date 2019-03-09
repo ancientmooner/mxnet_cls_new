@@ -178,6 +178,8 @@ __global__ void SimilarityComputeForwardKernel(const int n,
     }
 
     if (w * stride + dilate * (kw - half_kw) >= 0 && w * stride + dilate * (kw - half_kw) < in_width && h * stride + dilate * (kh - half_kh) >= 0 && h * stride + dilate * (kh - half_kh) < in_height) {
+    }
+    else {
       sum_sim = no_define_value;
     }
     int pos_inds = (g * kernel_height + kh) * kernel_width + kw;
