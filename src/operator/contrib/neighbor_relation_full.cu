@@ -693,10 +693,14 @@ class NeighborRelationFullGPUOp : public Operator{
         Tensor<xpu, 3, DType> query_buffer_tensor = query_buffer.get<xpu, 3, DType>(s);
 
         if (param_.use_batch_dot) {
-            BatchGEMM<false, false>(sim_buffer_tensor, key_buffer_tensor, query_buffer_tensor, (DType)1.0f,
+            if (param_.sim_method >= 0) {
+                BatchGEMM<false, false>(sim_buffer_tensor, key_buffer_tensor, query_buffer_tensor, (DType)1.0f,
                                         (DType)0.0f,
                                         workspace_batchdot);
-            
+            }
+            else{
+                sim_buffer_tensor = 0;
+            }
             SimilarityAddGeometryForwardKernel<DType>
                 <<<cuda_get_num_blocks(sim_size), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
                                       sim_size, 
@@ -906,10 +910,14 @@ class NeighborRelationFullGPUOp : public Operator{
         Tensor<xpu, 3, DType> query_buffer_tensor = query_buffer.get<xpu, 3, DType>(s);
 
         if (param_.use_batch_dot) {
-            BatchGEMM<false, false>(sim_buffer_tensor, key_buffer_tensor, query_buffer_tensor, (DType)1.0f,
+            if (param_.sim_method >= 0) {
+                BatchGEMM<false, false>(sim_buffer_tensor, key_buffer_tensor, query_buffer_tensor, (DType)1.0f,
                                         (DType)0.0f,
                                         workspace_batchdot1);
-            
+            }
+            else {
+                sim_buffer_tensor = 0;
+            }
             SimilarityAddGeometryForwardKernel<DType>
                 <<<cuda_get_num_blocks(sim_size), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
                                       sim_size, 
@@ -1010,12 +1018,14 @@ class NeighborRelationFullGPUOp : public Operator{
 
         if (param_.use_batch_dot) {
             //query
-            BatchGEMM<true, false>(query_grad_buffer_tensor, key_buffer_tensor, sim_grad_buffer_tensor, (DType)1.0f,
+            if (param_.sim_method >= 0) {
+                BatchGEMM<true, false>(query_grad_buffer_tensor, key_buffer_tensor, sim_grad_buffer_tensor, (DType)1.0f,
                                         (kAddTo == req[neighborRelationFull::kQuery]) ? (DType)1.0f : (DType)0.0f,
                                         workspace_batchdot1);
-            BatchGEMM<false, true>(key_grad_buffer_tensor, sim_grad_buffer_tensor, query_buffer_tensor, (DType)1.0f,
+                BatchGEMM<false, true>(key_grad_buffer_tensor, sim_grad_buffer_tensor, query_buffer_tensor, (DType)1.0f,
                                         (kAddTo == req[neighborRelationFull::kKey]) ? (DType)1.0f : (DType)0.0f,
                                         workspace_batchdot2);
+            }
         }
         else {
             SimilarityComputeKeyBackwardKernel<DType>

@@ -95,86 +95,91 @@ __global__ void SimilarityComputeForwardKernel(const int n,
     const int b = g / num_group;
     g = g % num_group;
 
-    const int key_per_group = query_channels / num_group;
+    DType sum_sim = 0;
     const int half_kh = kernel_height / 2;
     const int half_kw = kernel_width / 2;
-    
-    const int spatial_dim = height * width;
-    const int in_spatial_dim = in_height * in_width;
-    DType sum_sim = 0;
-    int query_inds = 0;
-    if (sim_method != 1) {
-      query_inds = ((b * num_group + g) * key_per_group * height + h) * width + w;
+    if (sim_method >= 0){
+      const int key_per_group = query_channels / num_group;
+      
+      const int spatial_dim = height * width;
+      const int in_spatial_dim = in_height * in_width;
+      int query_inds = 0;
+      if (sim_method != 1) {
+        query_inds = ((b * num_group + g) * key_per_group * height + h) * width + w;
+      }
+      const int key_saliency_group = key_channels - query_channels;
+  
+      if (w * stride + dilate * (kw - half_kw) >= 0 && w * stride + dilate * (kw - half_kw) < in_width && h * stride + dilate * (kh - half_kh) >= 0 && h * stride + dilate * (kh - half_kh) < in_height) {
+        int key_inds = ((b * key_channels + g * key_per_group) * in_height + h * stride + dilate * (kh - half_kh)) * in_width + w * stride + dilate * (kw - half_kw);
+        
+        for (int i = 0; i < key_per_group; ++i) {
+          if (sim_method == 0) {
+            sum_sim += query[query_inds + i * spatial_dim] * key[key_inds + i * in_spatial_dim] * scale;
+          }
+          else if (sim_method == 1) {
+            sum_sim += key[key_inds + i * in_spatial_dim] * scale;
+          }
+          else if (sim_method == 2) {
+            sum_sim += -abs(query[query_inds + i * spatial_dim] - key[key_inds + i * in_spatial_dim]) * scale;
+          }
+          else if (sim_method == 3) {
+            DType query_val = query[query_inds + i * spatial_dim];
+            DType key_val = key[key_inds + i * in_spatial_dim];
+            sum_sim += -abs(query_val - key_val) / (abs(query_val) + abs(key_val) + DType(1.0)) * scale;
+          }
+          else if (sim_method == 4) {
+            DType query_val = query[query_inds + i * spatial_dim];
+            DType key_val = key[key_inds + i * in_spatial_dim];
+            sum_sim += -(query_val - key_val) * (query_val - key_val) / (abs(query_val * key_val) + DType(1.0)) * scale;
+          }
+          else if (sim_method == 5) {
+            DType query_val = query[query_inds + i * spatial_dim];
+            DType key_val = key[key_inds + i * in_spatial_dim];
+            sum_sim += -(query_val - key_val) * (query_val - key_val) * scale;
+          }
+          if (key_saliency_group > 0) {
+              int key_sal_inds = (b * key_channels + query_channels + int(g * key_saliency_group) / num_group) * in_spatial_dim 
+                          + (h * stride + dilate * (kh - half_kh)) * in_width + w * stride + dilate * (kw - half_kw);
+              sum_sim += key[key_sal_inds];
+          }
+        }
+      }
+      else{
+        sum_sim = no_define_value;
+         /** for debug purpose ***/
+         /*
+        for (int i = 0; i < key_per_group; ++i) {
+          if (sim_method == 0) {
+            sum_sim += 0;
+          }
+          else if (sim_method == 1) {
+            sum_sim += 0;
+          }
+          else if (sim_method == 2) {
+            sum_sim += -abs(query[query_inds + i * spatial_dim]) * scale;
+          }
+          else if (sim_method == 3) {
+            DType query_val = query[query_inds + i * spatial_dim];
+            DType key_val = 0;
+            sum_sim += -abs(query_val - key_val) / (abs(query_val) + abs(key_val) + DType(1.0)) * scale;
+          }
+          else if (sim_method == 4) {
+            DType query_val = query[query_inds + i * spatial_dim];
+            DType key_val = 0;
+            sum_sim += -(query_val - key_val) * (query_val - key_val) / (abs(query_val * key_val) + DType(1.0)) * scale;
+          }
+          else if (sim_method == 5) {
+            DType query_val = query[query_inds + i * spatial_dim];
+            sum_sim += -query_val * query_val * scale;
+          }
+        }
+        */
+      }
     }
-    const int key_saliency_group = key_channels - query_channels;
 
     if (w * stride + dilate * (kw - half_kw) >= 0 && w * stride + dilate * (kw - half_kw) < in_width && h * stride + dilate * (kh - half_kh) >= 0 && h * stride + dilate * (kh - half_kh) < in_height) {
-      int key_inds = ((b * key_channels + g * key_per_group) * in_height + h * stride + dilate * (kh - half_kh)) * in_width + w * stride + dilate * (kw - half_kw);
-      
-      for (int i = 0; i < key_per_group; ++i) {
-        if (sim_method == 0) {
-          sum_sim += query[query_inds + i * spatial_dim] * key[key_inds + i * in_spatial_dim] * scale;
-        }
-        else if (sim_method == 1) {
-          sum_sim += key[key_inds + i * in_spatial_dim] * scale;
-        }
-        else if (sim_method == 2) {
-          sum_sim += -abs(query[query_inds + i * spatial_dim] - key[key_inds + i * in_spatial_dim]) * scale;
-        }
-        else if (sim_method == 3) {
-          DType query_val = query[query_inds + i * spatial_dim];
-          DType key_val = key[key_inds + i * in_spatial_dim];
-          sum_sim += -abs(query_val - key_val) / (abs(query_val) + abs(key_val) + DType(1.0)) * scale;
-        }
-        else if (sim_method == 4) {
-          DType query_val = query[query_inds + i * spatial_dim];
-          DType key_val = key[key_inds + i * in_spatial_dim];
-          sum_sim += -(query_val - key_val) * (query_val - key_val) / (abs(query_val * key_val) + DType(1.0)) * scale;
-        }
-        else if (sim_method == 5) {
-          DType query_val = query[query_inds + i * spatial_dim];
-          DType key_val = key[key_inds + i * in_spatial_dim];
-          sum_sim += -(query_val - key_val) * (query_val - key_val) * scale;
-        }
-        if (key_saliency_group > 0) {
-            int key_sal_inds = (b * key_channels + query_channels + int(g * key_saliency_group) / num_group) * in_spatial_dim 
-                        + (h * stride + dilate * (kh - half_kh)) * in_width + w * stride + dilate * (kw - half_kw);
-            sum_sim += key[key_sal_inds];
-        }
-      }
+      sum_sim = no_define_value;
     }
-    else{
-      //sum_sim = no_define_value;
-       /** for debug purpose ***/
-       /*
-      for (int i = 0; i < key_per_group; ++i) {
-        if (sim_method == 0) {
-          sum_sim += 0;
-        }
-        else if (sim_method == 1) {
-          sum_sim += 0;
-        }
-        else if (sim_method == 2) {
-          sum_sim += -abs(query[query_inds + i * spatial_dim]) * scale;
-        }
-        else if (sim_method == 3) {
-          DType query_val = query[query_inds + i * spatial_dim];
-          DType key_val = 0;
-          sum_sim += -abs(query_val - key_val) / (abs(query_val) + abs(key_val) + DType(1.0)) * scale;
-        }
-        else if (sim_method == 4) {
-          DType query_val = query[query_inds + i * spatial_dim];
-          DType key_val = 0;
-          sum_sim += -(query_val - key_val) * (query_val - key_val) / (abs(query_val * key_val) + DType(1.0)) * scale;
-        }
-        else if (sim_method == 5) {
-          DType query_val = query[query_inds + i * spatial_dim];
-          sum_sim += -query_val * query_val * scale;
-        }
-      }
-      */
-    }
-
     int pos_inds = (g * kernel_height + kh) * kernel_width + kw;
     sum_sim += pos_weight[pos_inds];
 
@@ -1083,7 +1088,6 @@ class NeighborRelationGPUOp : public Operator{
             cur_batch_step = batch_size - (M - 1) * batch_step_;
             CHECK_EQ(cur_batch_step, batch_step_) << "batch_step must be divided by batch_size";
         }
-        
         SimilarityComputeForwardKernel<DType>
             <<<cuda_get_num_blocks(sim_size), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
                                       sim_size, 
@@ -1112,10 +1116,25 @@ class NeighborRelationGPUOp : public Operator{
         if (param_.norm_method == 0) {
           Softmax(softmax_buffer_tensor, sim_buffer_tensor);
         }
+        // |w|/sum(|w|)
         else if (param_.norm_method == 1) {
           Assign(sim_buffer_tensor, kWriteTo, F<mshadow_op::relu>(sim_buffer_tensor));
           sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(sim_buffer_tensor, 1) + scalar<DType>(1e-6);
           Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 0, param_.kernel_size * param_.kernel_size));
+        }
+        // w / |w|_2
+        else if (param_.norm_method == 2){
+          sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(F<mxnet::op::mshadow_op::square>(sim_buffer_tensor), 1);
+          sum_softmax_buffer_tensor = F<mxnet::op::mshadow_op::square_root>(sum_softmax_buffer_tensor) + scalar<DType>(1e-6);
+          Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 
+                    0, param_.kernel_size * param_.kernel_size));
+        }
+        // w / |w|_2
+        else if (param_.norm_method == 3){
+          sim_buffer_tensor = F<mxnet::op::mshadow_op::square>(sim_buffer_tensor);
+          sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(sim_buffer_tensor, 1) + scalar<DType>(1e-6);
+          Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 
+                    0, param_.kernel_size * param_.kernel_size));
         }
         else {
           Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor + scalar<DType>(0));
@@ -1217,7 +1236,7 @@ class NeighborRelationGPUOp : public Operator{
     int output_step = batch_step_ * value_channels * height * width;
 
     Tensor<xpu, 1, DType> workspace = ctx.requested[neighborRelation::kTempSpace]
-            .get_space_typed<xpu, 1, DType>(Shape1(3 * sim_size + batch_step_ * param_.num_group * height * width), s);
+            .get_space_typed<xpu, 1, DType>(Shape1(3 * sim_size + batch_step_ * param_.num_group * height * width * 2), s);
     
     TShape sim_buffer_shape(3);
     sim_buffer_shape[0] = batch_step_ * param_.num_group;
@@ -1292,6 +1311,20 @@ class NeighborRelationGPUOp : public Operator{
           sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(sim_buffer_tensor, 1) + scalar<DType>(1e-6);
           Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 0, param_.kernel_size * param_.kernel_size));
         }
+        // w / |w|_2
+        else if (param_.norm_method == 2){
+          sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(F<mxnet::op::mshadow_op::square>(sim_buffer_tensor), 1);
+          sum_softmax_buffer_tensor = F<mxnet::op::mshadow_op::square_root>(sum_softmax_buffer_tensor) + scalar<DType>(1e-6);
+          Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 
+                    0, param_.kernel_size * param_.kernel_size));
+        }
+        // w / |w|_2
+        else if (param_.norm_method == 3){
+          sim_buffer_tensor = F<mxnet::op::mshadow_op::square>(sim_buffer_tensor);
+          sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(sim_buffer_tensor, 1) + scalar<DType>(1e-6);
+          Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 
+                    0, param_.kernel_size * param_.kernel_size));
+        }
         else {
           Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor + scalar<DType>(0));
         }
@@ -1317,6 +1350,11 @@ class NeighborRelationGPUOp : public Operator{
         MSHADOW_CUDA_POST_KERNEL_CHECK(AggregationValueBackwardKernel);
 
         // backward to softmax grad
+
+        //DType* temp_ptr = sim_buffer_tensor.dptr_;
+        //if (param_.norm_method == 3) {
+        //  temp_ptr = sim_grad_buffer_tensor.dptr_;
+        //}
         AggregationSoftmaxBackwardKernel
             <<<cuda_get_num_blocks(sim_size), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
                                       sim_size,
@@ -1354,13 +1392,37 @@ class NeighborRelationGPUOp : public Operator{
                  (sim_buffer_tensor - broadcast_with_axis(reduce_with_axis<red::sum, false>(softmax_buffer_tensor * sim_buffer_tensor, 1), 0, param_.kernel_size * param_.kernel_size)) / broadcast_with_axis(sum_softmax_buffer_tensor, 0, param_.kernel_size * param_.kernel_size));
           Assign(sim_grad_buffer_tensor, kWriteTo, F<mshadow_op::relu_grad>(softmax_buffer_tensor) * sim_grad_buffer_tensor);
         }
+        // w / |w|_2
+        else if (param_.norm_method == 2){
+          TBlob temp_buffer(workspace.dptr_ + sim_size * 3 + batch_step_ * param_.num_group * height * width, 
+                    sum_softmax_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+          Tensor<xpu, 2, DType> temp_buffer_tensor = temp_buffer.get<xpu, 2, DType>(s);
+          temp_buffer_tensor = reduce_with_axis<red::sum, false>(sim_buffer_tensor * softmax_buffer_tensor, 1);
+          Assign(sim_grad_buffer_tensor, kWriteTo,
+              (sim_buffer_tensor - softmax_buffer_tensor * broadcast_with_axis(temp_buffer_tensor, 0, param_.kernel_size * param_.kernel_size)) /
+                  broadcast_with_axis(sum_softmax_buffer_tensor, 0, param_.kernel_size * param_.kernel_size));
+        }
+        // w^2 / |w|_2^2
+        else if (param_.norm_method == 3){
+          TBlob temp_buffer(workspace.dptr_ + sim_size * 3 + batch_step_ * param_.num_group * height * width, 
+                    sum_softmax_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+          Tensor<xpu, 2, DType> temp_buffer_tensor = temp_buffer.get<xpu, 2, DType>(s);
+            
+          temp_buffer_tensor = reduce_with_axis<red::sum, false>(sim_buffer_tensor * softmax_buffer_tensor, 1);
+         
+          softmax_buffer_tensor = F<mxnet::op::mshadow_op::square_root>(softmax_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 0, param_.kernel_size * param_.kernel_size));
+          Assign(sim_grad_buffer_tensor, kWriteTo,
+              (sim_buffer_tensor - broadcast_with_axis(temp_buffer_tensor, 0, param_.kernel_size * param_.kernel_size)) * softmax_buffer_tensor * scalar<DType>(2));
+        }
         else {
           Assign(sim_grad_buffer_tensor, kWriteTo, sim_buffer_tensor + scalar<DType>(0));
         }
         
         // backward to key & query
-        SimilarityComputeBackwardKernel<DType>
-            <<<cuda_get_num_blocks(query_step), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
+        
+        if (param_.sim_method >= 0) { 
+          SimilarityComputeBackwardKernel<DType>
+                <<<cuda_get_num_blocks(query_step), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
                                       query_step,
                                       key.dptr_ + i * key_step, 
                                       query.dptr_ + i * query_step,
@@ -1382,8 +1444,8 @@ class NeighborRelationGPUOp : public Operator{
                                       param_.sim_method,
                                       key_grad.dptr_ + i * key_step,
                                       query_grad.dptr_ + i * query_step);
-        MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeBackwardKernel);
-        
+          MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputeBackwardKernel);
+        }
         // backward to position
         Assign(pos_weight_grad_1d, kAddTo,
             sumall_except_dim<1>(reshape(sim_grad_buffer_tensor, Shape3(batch_step_, pos_weight_size, height * width))));
