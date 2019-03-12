@@ -27,6 +27,7 @@
 #include <string>
 #include <algorithm>
 #include <vector>
+#include <cmath>
 #include "./image_augmenter.h"
 #include "../common/utils.h"
 
@@ -241,36 +242,87 @@ class DefaultImageAugmenter : public ImageAugmenter {
     } else {
       res = src;
     }
-    //cv::imwrite("ori_image.png", res);
+
+    // New Transformation Method
+    cv::Point2f srcTri[3];
+    cv::Point2f dstTri[3];
+    cv::Mat warp_mat(2, 3, CV_32F);
+
+    int dst_cols = param_.data_shape[2];
+    int dst_rows = param_.data_shape[1];
+    dstTri[0] = cv::Point2f(0, 0);
+    dstTri[1] = cv::Point2f(0, dst_rows - 1);
+    dstTri[2] = cv::Point2f(dst_cols - 1, 0);
 
     // torch style scale and aspect ratio jittering
     if ((param_.min_random_scale != 1.0 || param_.max_aspect_ratio != 0.0f) && (param_.rotate == 0 || param_.max_shear_ratio == 0.0f))
     {
       std::uniform_real_distribution<float> rand_uniform(0, 1);
       int rand_cnt = 0;
-      float scale = rand_uniform(*prnd) *
-              (param_.max_random_scale - param_.min_random_scale) + param_.min_random_scale;
       while (rand_cnt < 10) {
+        // scale
+        float scale = rand_uniform(*prnd) * (param_.max_random_scale - param_.min_random_scale) + param_.min_random_scale;
         // aspect ratio
         float ratio = rand_uniform(*prnd) * (param_.max_aspect_ratio - 1) + 1;
-        //param_.max_aspect_ratio * 2 - param_.max_aspect_ratio + 1;
-	int hs = round(scale * sqrt(res.rows * res.cols * ratio));
-        int ws = round(scale * sqrt(res.rows * res.cols / ratio));
-        //int hs = round(2 * scale / (1 + ratio) * res.rows);
-        //int ws = round(ratio * hs);
+	    float hs = round(scale * sqrt(res.rows * res.cols * ratio));
+        float ws = round(scale * sqrt(res.rows * res.cols / ratio));
+
+        int angle = std::uniform_int_distribution<int>(-param_.max_rotate_angle, param_.max_rotate_angle)(*prnd);
+        if (param_.rotate > 0) angle = param_.rotate;
+
+        float a = cos(angle / 180.0 * M_PI);
+        float b = sin(angle / 180.0 * M_PI);
+
+        float abs_a = std::abs(a);
+        float abs_b = std::abs(b);
+
         if (rand_uniform(*prnd) < 0.5) {
-          int tmp = hs;
+          float tmp = hs;
           hs = ws;
           ws = tmp;
         }
-        if (hs <= res.rows && ws <= res.cols) {
-          int x1 = rand_uniform(*prnd) * (res.cols - ws);
-          int y1 = rand_uniform(*prnd) * (res.rows - hs);
-          cv::Rect roi(x1, y1, ws, hs);
+
+        float new_hs = hs * abs_a + ws * abs_b;
+        float new_ws = hs * abs_b + ws * abs_a;
+
+        if (new_hs <= res.rows && new_ws <= res.cols) {
+          float x_shift = rand_uniform(*prnd) * (res.cols - new_ws);
+          float y_shift = rand_uniform(*prnd) * (res.rows - new_hs);
+          float x1, y1, x2, y2, x3, y3;
+          if (angle > 0) {
+            // calculate the left-up corner
+            x1 = x_shift + hs * abs_b;
+            y1 = y_shift;
+            // calculate the left-down corner
+            x2 = x_shift;
+            y2 = y_shift + hs * abs_a;
+            // calculate the right-up corner
+            x3 = x_shift + new_ws;
+            y3 = y_shift + ws * abs_b;
+
+          }
+          else {
+            // calculate the left-up corner
+            x1 = x_shift;
+            y1 = y_shift + ws * abs_b;
+            // calculate the left-down corner
+            x2 = x_shift + hs * abs_b;
+            y2 = y_shift + new_hs;
+            // calculate the right-up corner
+            x3 = x_shift + ws * abs_a;
+            y3 = y_shift;
+          }
+          srcTri[0] = cv::Point2f(x1, y1);
+          srcTri[1] = cv::Point2f(x2, y2);
+          srcTri[2] = cv::Point2f(x3, y3);
+          warp_mat = cv::getAffineTransform(srcTri, dstTri);
           int interpolation_method = GetInterMethod(param_.inter_method, ws, hs,
                 param_.data_shape[2], param_.data_shape[1], prnd);
-          cv::resize(res(roi), res, cv::Size(param_.data_shape[2], param_.data_shape[1])
-                , 0, 0, interpolation_method);
+          cv::warpAffine(res, temp_, warp_mat, cv::Size(dst_cols, dst_rows),
+                         interpolation_method,
+                         cv::BORDER_CONSTANT,
+                         cv::Scalar(param_.fill_value, param_.fill_value, param_.fill_value));
+          res = temp_;
           break;
         }
         else
@@ -298,7 +350,57 @@ class DefaultImageAugmenter : public ImageAugmenter {
         cv::resize(res(roi), res, cv::Size(param_.data_shape[2], param_.data_shape[1])
                , 0, 0, interpolation_method);
       }
-      //cv::imwrite("after_crop.png", res);
+    }
+    else if (param_.rotate != 0){
+      int angle = param_.rotate;
+      float t = tan((45 - std::abs(angle)) / 180.0 * M_PI);
+      // get origin image center
+      float center_w = 0.5 * res.cols;
+      float center_h = 0.5 * res.rows;
+      float t_shift = 128.0 * t;
+      float x1, y1, x2, y2, x3, y3;
+      if (angle > 0) {
+        // left-up corner
+        x1 = center_w - t_shift;
+        y1 = center_h - 128;
+        // left-down corner
+        x2 = center_w - 128;
+        y2 = center_h + t_shift;
+        // right-up corner
+        x3 = center_w + 128;
+        y3 = center_h - t_shift;
+      }
+      else {
+        // left-up corner
+        x1 = center_w - 128;
+        y1 = center_h - t_shift;
+        // left-down corner
+        x2 = center_w - t_shift;
+        y2 = center_h + 128;
+        // right-up corner
+        x3 = center_w + t_shift;
+        y3 = center_h - 128;
+      }
+      srcTri[0] = cv::Point2f(x1, y1);
+      srcTri[1] = cv::Point2f(x2, y2);
+      srcTri[2] = cv::Point2f(x3, y3);
+      warp_mat = cv::getAffineTransform(srcTri, dstTri);
+      int ws, hs;
+      if (std::abs(angle) < 10) {
+        ws = 257;
+        hs = 257;
+      }
+      else {
+        ws = 223;
+        ws = 223;
+      }
+      int interpolation_method = GetInterMethod(param_.inter_method, ws, hs,
+            param_.data_shape[2], param_.data_shape[1], prnd);
+      cv::warpAffine(res, temp_, warp_mat, cv::Size(dst_cols, dst_rows),
+                     interpolation_method,
+                     cv::BORDER_CONSTANT,
+                     cv::Scalar(param_.fill_value, param_.fill_value, param_.fill_value));
+      res = temp_;
     }
     else{
       // normal augmentation by affine transformation.
