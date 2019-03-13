@@ -156,6 +156,9 @@ MXNET_UNARY_MATH_OP(log_grad, 1.0f / math::id(a));
 
 MXNET_SIMPLE_UNARY_MATH_OP(log10);
 
+// For DropOut
+MXNET_BINARY_MATH_OP_NC(threshold_eq, a <= b ? DType(1) : DType(0));
+
 // Constant is 1 / log(10)
 struct log10_grad : public mxnet_op::tunable {
   template<typename DType>
