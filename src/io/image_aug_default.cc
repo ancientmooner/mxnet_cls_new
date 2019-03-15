@@ -353,33 +353,65 @@ class DefaultImageAugmenter : public ImageAugmenter {
     }
     else if (param_.rotate != 0){
       int angle = param_.rotate;
-      float t = tan((45 - std::abs(angle)) / 180.0 * M_PI);
+      int angle_abs = std::abs(angle);
+      if (angle_abs > 45) {
+        angle_abs = angle_abs - 45;
+      }
+      float t = tan((45 - angle_abs) / 180.0 * M_PI);
+      float tt = tan(angle_abs / 180.0 * M_PI);
       // get origin image center
       float center_w = 0.5 * res.cols;
       float center_h = 0.5 * res.rows;
       float t_shift = 128.0 * t;
+      float tt_shift = 128.0 * tt;
       float x1, y1, x2, y2, x3, y3;
       if (angle > 0) {
-        // left-up corner
-        x1 = center_w - t_shift;
-        y1 = center_h - 128;
-        // left-down corner
-        x2 = center_w - 128;
-        y2 = center_h + t_shift;
-        // right-up corner
-        x3 = center_w + 128;
-        y3 = center_h - t_shift;
+        if (angle <= 45) {
+          // left-up corner
+          x1 = center_w - t_shift;
+          y1 = center_h - 128;
+          // left-down corner
+          x2 = center_w - 128;
+          y2 = center_h + t_shift;
+          // right-up corner
+          x3 = center_w + 128;
+          y3 = center_h - t_shift;
+        }
+        else {
+          // left-up corner
+          x1 = center_w + tt_shift;
+          y1 = center_h - 128;
+          // left-down corner
+          x2 = center_w - 128;
+          y2 = center_h - tt_shift;
+          // right-up corner
+          x3 = center_w + 128;
+          y3 = center_h + tt_shift;
+        }
       }
       else {
-        // left-up corner
-        x1 = center_w - 128;
-        y1 = center_h - t_shift;
-        // left-down corner
-        x2 = center_w - t_shift;
-        y2 = center_h + 128;
-        // right-up corner
-        x3 = center_w + t_shift;
-        y3 = center_h - 128;
+        if (angle >= -45) {
+          // left-up corner
+          x1 = center_w - 128;
+          y1 = center_h - t_shift;
+          // left-down corner
+          x2 = center_w - t_shift;
+          y2 = center_h + 128;
+          // right-up corner
+          x3 = center_w + t_shift;
+          y3 = center_h - 128;
+        }
+        else {
+          // left-up corner
+          x1 = center_w - 128;
+          y1 = center_h + tt_shift;
+          // left-down corner
+          x2 = center_w + tt_shift;
+          y2 = center_h + 128;
+          // right-up corner
+          x3 = center_w - tt_shift;
+          y3 = center_h - 128;
+        }
       }
       srcTri[0] = cv::Point2f(x1, y1);
       srcTri[1] = cv::Point2f(x2, y2);
