@@ -24,9 +24,7 @@
 
 namespace mxnet {
 namespace op {
-
-//neighbor_relation(value_data, key_data, query_data, pos_weight, offset_grids_repeat, scale, num_group=32, kernel_size=7):
-
+  
 namespace neighborRelation {
 enum NeighborRelationOpInputs {kValue, kKey, kQuery, kPos};
 enum NeighborRelationOpOutputs {kOutput, kMask};
@@ -98,26 +96,14 @@ class NeighborRelationProp : public OperatorProperty {
     const TShape &kshape = in_shape->at(neighborRelation::kKey);
     const TShape &qshape = in_shape->at(neighborRelation::kQuery);
 
-
-    //kshape [batch_size, key_channels, height, width]
-    //qshape [batch_size, key_channels, height, width]
-    //vshape [batch_size, value_channels, height, width]
-    //pos_weight [num_group, kernel_size, kernel_size]
-
-    //out_shape vshape
-
     CHECK_EQ(vshape[0], kshape[0]) << "value and key should have the same batch size";
     CHECK_EQ(vshape[2], kshape[2]) << "value and key should have the same height";
     CHECK_EQ(vshape[3], kshape[3]) << "value and key should have the same width";
-    //CHECK_EQ(vshape[0], qshape[0]) << "value and query should have the same batch size";
-    //CHECK_EQ(vshape[2], qshape[2]) << "value and query should have the same height";
-    //CHECK_EQ(vshape[3], qshape[3]) << "value and query should have the same width";
     
     CHECK_EQ(kshape[1], qshape[1] + param_.key_saliency_group) << "key and query should have the same channel dim";
     
     const TShape &pshape = in_shape->at(neighborRelation::kPos);
-    //CHECK_EQ(pshape[0], param_.num_group) << "pos_weight must be of shape [num_group, kernel_y, kenel_x]";
-
+    
     TShape oshape(4);
     oshape[0] = vshape[0];
     oshape[1] = vshape[1];
@@ -132,17 +118,7 @@ class NeighborRelationProp : public OperatorProperty {
       mshape[1] = param_.kernel_size * param_.kernel_size;
       mshape[2] = qshape[2] * qshape[3];
       out_shape->push_back(mshape);
-      //printf("dropout:0, %.4f\n", param_.dropout_ratio);
-      //CHECK_LE(out_shape->size(), -1) << "param_.dropout_ratio > 0" << param_.dropout_ratio;
     }
-    //else {
-      //printf("dropout:0, %.4f\n", param_.dropout_ratio);
-      //CHECK_LT(out_shape->size(), -1) << "param_.dropout_ratio == 0" << param_.dropout_ratio;
-    //}
-    //printf("output shape size: %d\n", out_shape->size());
-    //printf("dropout:2\n");
-    //printf("dropout:0, %.4f\n", param_.dropout_ratio);
-    //CHECK_LE(out_shape->size(), 1) << "out shape size should equal 2, dropout ratio = " << param_.dropout_ratio;
     return true; 
   }
 
@@ -183,24 +159,14 @@ class NeighborRelationProp : public OperatorProperty {
   }
 
   int NumVisibleOutputs() const override {
-    //if (param_.dropout_ratio > 0) {
-      //printf("vis output num: 2\n");
-      //return 2;
-    //}
-    //else {
-      //printf("vis output num: 1\n");
-      //return 1;
-    //}
     return 1;
   }
 
   int NumOutputs() const override {
     if (param_.dropout_ratio > 0) {
-      //printf("output num: 2\n");
       return 2;
     }
     else {
-      //printf("output num: 1\n");
       return 1;
     }
   }
@@ -211,7 +177,6 @@ class NeighborRelationProp : public OperatorProperty {
 
   std::vector<std::string> ListOutputs() const override {
     if (param_.dropout_ratio > 0) {
-      //printf("output num (mask): 2\n");
       return {"output", "mask"};
     }
     else {
