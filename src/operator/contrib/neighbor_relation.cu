@@ -28,39 +28,6 @@ namespace mshadow {
 namespace cuda {
 namespace neighbor_relation {
 
-/*
-# [batch_size, key_channels, height * 49, width]
-warp_key_data = mx.sym.BilinearSampler(data=key_data, grid=offset_grids_repeat)
-# [batch_size, key_channels, 49, height, width]
-warp_key_data_reshape = mx.sym.reshape(warp_key_data, shape=(0, 0, -4, kernel_size ** 2, -1, -2))
-# [batch_size, value_channels, height * 49, width]
-warp_value_data = mx.sym.BilinearSampler(data=value_data, grid=offset_grids_repeat)
-# [batch_size, num_group, value_channels/num_group, 49, height, width]
-warp_value_data_reshape = mx.sym.reshape(warp_value_data, shape=(0, -4, num_group, -1, -4, kernel_size ** 2, -1, -2))
-# [batch_size, key_channels, 1, height, width]
-query_data_reshape = mx.sym.expand_dims(query_data, axis=2)
-# [batch_size, key_channels, 49, height, width]
-app_dot = mx.sym.broadcast_mul(query_data_reshape, warp_key_data_reshape)
-# [batch_size, num_group, key_channels/num_group, 49, height, width]
-app_dot_reshape = mx.sym.reshape(app_dot, shape=(0, -4, num_group, -1, -2))
-# [batch_size, num_group, 49, height, width]
-app_sim = mx.sym.sum(app_dot_reshape, axis=2) * scale
-# [batch_size, num_group, 49, height, width]
-app_geo_sim = mx.sym.broadcast_add(app_sim, mx.sym.reshape(pos_weight, (1, num_group, -1, 1, 1)))
-# [batch_size, num_group, 49, height, width]
-app_geo_sim = mx.sym.softmax(app_geo_sim, axis=2)
-# [batch_size, num_group, 1, 49, height, width]
-app_geo_sim = mx.sym.expand_dims(app_geo_sim, axis=2)
-output_value = mx.sym.reshape(mx.sym.sum(mx.sym.broadcast_mul(app_geo_sim, warp_value_data_reshape), axis=3), shape=(0, -3, -2))
-*/
-
-// query: [batch_size, key_channels, height, width]
-// key: [batch_size, key_channels, height, width]
-// scale:
-// num_group:
-// pos_weight: has transformed using log operation [num_group, kernel_height, kernel_width]
-// output: [batch_size, num_group * kernel_height * kernel_width, height, width]
-
 template <typename DType>
 __global__ void SimilarityComputeForwardKernel(const int n,
                                       const DType* key, 
@@ -146,34 +113,6 @@ __global__ void SimilarityComputeForwardKernel(const int n,
       }
       else{
         sum_sim = no_define_value;
-         /** for debug purpose ***/
-         /*
-        for (int i = 0; i < key_per_group; ++i) {
-          if (sim_method == 0) {
-            sum_sim += 0;
-          }
-          else if (sim_method == 1) {
-            sum_sim += 0;
-          }
-          else if (sim_method == 2) {
-            sum_sim += -abs(query[query_inds + i * spatial_dim]) * scale;
-          }
-          else if (sim_method == 3) {
-            DType query_val = query[query_inds + i * spatial_dim];
-            DType key_val = 0;
-            sum_sim += -abs(query_val - key_val) / (abs(query_val) + abs(key_val) + DType(1.0)) * scale;
-          }
-          else if (sim_method == 4) {
-            DType query_val = query[query_inds + i * spatial_dim];
-            DType key_val = 0;
-            sum_sim += -(query_val - key_val) * (query_val - key_val) / (abs(query_val * key_val) + DType(1.0)) * scale;
-          }
-          else if (sim_method == 5) {
-            DType query_val = query[query_inds + i * spatial_dim];
-            sum_sim += -query_val * query_val * scale;
-          }
-        }
-        */
       }
     }
 
@@ -211,7 +150,6 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
                                       const int sim_method,
                                       DType* key_grad,
                                       DType* query_grad) {
-  // n = batch_size * num_group * key_per_group * height * width
   CUDA_KERNEL_LOOP(index, n) { 
     const int w = index % width;
     int h = index / width;
@@ -228,7 +166,6 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
     const int spatial_dim = height * width;
     const int key_saliency_group = key_channels - query_channels;
 
-    //int query_inds = ((b * num_group + g) * key_per_group * height + h) * width + w;
     int output_inds = ((b * num_group + g) * kernel_height * kernel_width * height + h) * width + w; 
     DType sum_query_grad = 0;
 
@@ -237,7 +174,6 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
         for (int kw = 0; kw < kernel_width; ++kw) {
           if (w * stride + dilate * (kw - half_kw) >= 0 && w * stride + dilate * (kw - half_kw) < in_width 
             && h * stride + dilate * (kh - half_kh) >= 0 && h * stride + dilate * (kh - half_kh) < in_height) {
-          //if (kw + w - half_kw >= 0 && kw + w - half_kw < width && kh + h - half_kh >= 0 && kh + h - half_kh < height) {
             DType c_out_grad = output_grad[output_inds + (kh * kernel_width + kw) * spatial_dim];
             if (sim_method == 0) {
               sum_query_grad += c_out_grad 
@@ -288,58 +224,6 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
               sum_query_grad += 2 * c_out_grad * (key_val - query_val);
             }
           }
-          else {
-
-       /** for debug purpose ***/
-            /*
-            DType c_out_grad = output_grad[output_inds + (kh * kernel_width + kw) * spatial_dim];
-            if (sim_method == 2) {
-              DType key_val = 0;
-              DType query_val = query[index];
-              if (key_val > query_val) {
-                sum_query_grad += c_out_grad;
-              }
-              else if (key_val < query_val) {
-                sum_query_grad += -c_out_grad;
-              }
-            }
-            else if (sim_method == 3) {
-              DType key_val = 0;
-              DType query_val = query[index];
-              if (key_val > query_val) {
-                sum_query_grad += c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0)); 
-              }
-              else if (key_val < query_val) {
-                sum_query_grad += -c_out_grad / (abs(key_val) + abs(query_val) + DType(1.0)); 
-              }
-
-              if (query_val > 0) {
-                sum_query_grad += c_out_grad * abs(key_val - query_val) / ((abs(key_val) +abs(query_val) + DType(1.0)) * (abs(key_val) +abs(query_val) + DType(1.0))); 
-              }
-              else if (query_val < 0) {
-                sum_query_grad += -c_out_grad * abs(key_val - query_val) / ((abs(key_val) +abs(query_val) + DType(1.0)) * (abs(key_val) +abs(query_val) + DType(1.0))); 
-              }
-            }
-            else if (sim_method == 4) {
-              DType key_val = 0;
-              DType query_val = query[index];
-              sum_query_grad += 2 * c_out_grad * (key_val - query_val) / (abs(key_val * query_val) + DType(1.0));
-              
-              if (key_val * query_val > 0) {
-                sum_query_grad += c_out_grad * key_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
-              }
-              else if(key_val * query_val < 0) {
-                sum_query_grad += -c_out_grad * key_val * (key_val - query_val) * (key_val - query_val) / ((abs(key_val * query_val) + DType(1.0)) * (abs(key_val * query_val) + DType(1.0))); 
-              }
-            }
-            else if (sim_method == 5) {
-              DType key_val = 0;
-              DType query_val = query[index];
-              sum_query_grad += 2 * c_out_grad * (key_val - query_val);
-            }
-            */
-
-          }
         }
       }
       sum_query_grad *= scale;
@@ -350,7 +234,6 @@ __global__ void SimilarityComputeBackwardKernel(const int n,
     int end_kh = half_kh / stride;
     int start_kw = -half_kw / stride;
     int end_kw = half_kw / stride;
-    //key_inds = ((b * key_channels + g * key_per_group + kpg) * in_height + h * stride) * in_width + w * stride;
     int key_sal_inds = (b * key_channels + query_channels + int(g * key_saliency_group) / num_group) * in_height * in_width
                         + h * stride * in_width + w * stride;
 
@@ -1268,10 +1151,6 @@ class NeighborRelationGPUOp : public Operator{
     const int pos_weight_size = param_.num_group * param_.kernel_size * param_.kernel_size;
 
     int backward_pos_weight_step = BLOCK_SIZE * param_.kernel_size * param_.kernel_size * param_.num_group;
-    // output_grad: [batch_size, num_group, kernel_height, kernel_width, height, width]
-    // n = num_group * kernel_height * kernel_width * BLOCK_SIZE * (int((height * width - 1) / BLOCK_SIZE) + 1)
-
-
 
     for (int i = 0; i < M; ++i) {
         int cur_batch_step = batch_step_;
@@ -1352,11 +1231,6 @@ class NeighborRelationGPUOp : public Operator{
         MSHADOW_CUDA_POST_KERNEL_CHECK(AggregationValueBackwardKernel);
 
         // backward to softmax grad
-
-        //DType* temp_ptr = sim_buffer_tensor.dptr_;
-        //if (param_.norm_method == 3) {
-        //  temp_ptr = sim_grad_buffer_tensor.dptr_;
-        //}
         AggregationSoftmaxBackwardKernel
             <<<cuda_get_num_blocks(sim_size), mshadow::cuda::kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
                                       sim_size,
@@ -1451,20 +1325,6 @@ class NeighborRelationGPUOp : public Operator{
         // backward to position
         Assign(pos_weight_grad_1d, kAddTo,
             sumall_except_dim<1>(reshape(sim_grad_buffer_tensor, Shape3(batch_step_, pos_weight_size, height * width))));
-        /*
-        int num_blocks = std::min(mshadow::cuda::kMaxGridNum, (backward_pos_weight_step + BLOCK_SIZE - 1) / BLOCK_SIZE);
-        SimilarityComputePositionWeightBackwardKernel<DType, BLOCK_SIZE>
-            <<<num_blocks, BLOCK_SIZE, 0, mshadow::Stream<gpu>::GetStream(s)>>>(
-                                      num_blocks * BLOCK_SIZE,
-                                      sim_buffer_tensor.dptr_,
-                                      batch_step_, 
-                                      height * width, 
-                                      param_.kernel_size,
-                                      param_.kernel_size,
-                                      param_.num_group,
-                                      pos_weight_grad.dptr_);
-        MSHADOW_CUDA_POST_KERNEL_CHECK(SimilarityComputePositionWeightBackwardKernel);
-        */
     }
   }
 
