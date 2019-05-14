@@ -1001,7 +1001,7 @@ class NeighborRelationGPUOp : public Operator{
         if (param_.norm_method == 0) {
           Softmax(softmax_buffer_tensor, sim_buffer_tensor);
         }
-        // |w|/sum(|w|)
+        // relu(w)/sum(relu(w))
         else if (param_.norm_method == 1) {
           Assign(sim_buffer_tensor, kWriteTo, F<mshadow_op::relu>(sim_buffer_tensor));
           sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(sim_buffer_tensor, 1) + scalar<DType>(1e-6);
@@ -1014,13 +1014,14 @@ class NeighborRelationGPUOp : public Operator{
           Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 
                     0, param_.kernel_size * param_.kernel_size));
         }
-        // w / |w|_2
+        // w^2 / |w|_2^2
         else if (param_.norm_method == 3){
           sim_buffer_tensor = F<mxnet::op::mshadow_op::square>(sim_buffer_tensor);
           sum_softmax_buffer_tensor = reduce_with_axis<red::sum, false>(sim_buffer_tensor, 1) + scalar<DType>(1e-6);
           Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor / broadcast_with_axis(sum_softmax_buffer_tensor, 
                     0, param_.kernel_size * param_.kernel_size));
         }
+        // w
         else {
           Assign(softmax_buffer_tensor, kWriteTo, sim_buffer_tensor + scalar<DType>(0));
         }
